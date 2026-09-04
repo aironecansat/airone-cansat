@@ -1,0 +1,57 @@
+# AirOne V7.1 — Phase 1 Core Foundation dependencies
+# Version-pinned for reproducible ground-station deployments.
+# Audited with `pip-audit -r requirements_v71.txt --disable-pip --no-deps`
+# (see docs/security_model.md for the recorded result and date).
+
+# --- Core numerics & data ---
+numpy==1.26.4              # arrays, filtering math
+scipy==1.13.1             # Savitzky-Golay, Butterworth, signal processing
+pandas==2.2.2             # tabular export / analysis helpers
+
+# --- Security ---
+PyJWT==2.13.0              # JWT access/refresh tokens
+bcrypt==4.2.0             # password hashing (rounds=12)
+cryptography==50.0.1      # supporting crypto primitives
+
+# --- Web API ---
+Flask==3.1.3              # REST API
+flask-cors==6.0.5         # explicit CORS allow-list
+flask-limiter==3.8.0      # per-endpoint rate limiting
+marshmallow==3.26.2       # request schema validation
+
+# --- Serial / hardware ---
+pyserial==3.5             # serial transport + auto-discovery
+
+# --- Config / system ---
+PyYAML==6.0.2             # config file parsing
+psutil==6.0.0             # host metrics for health monitor
+
+# --- Optional: Forward Error Correction ---
+reedsolo==1.7.0           # OPTIONAL Reed-Solomon FEC; disabled gracefully if absent
+
+# --- Optional: Machine learning (Phase 4) ---
+# The robust median/MAD detector is pure NumPy and ALWAYS available. The
+# detectors below are optional and each degrades explicitly if absent
+# (see /api/v1/ml/detectors for a live availability probe).
+scikit-learn==1.5.1       # OPTIONAL — Isolation Forest + GMM detectors
+joblib==1.5.3             # OPTIONAL — checksummed model persistence (ModelStore)
+# torch (CPU)             # OPTIONAL — enables the LSTM forecast detector only;
+#                         #   NOT required. Install separately if desired:
+#                         #   pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+# --- Optional: Visualisation / GUI (Phase 3) ---
+# The GUI degrades explicitly if these are absent (see src/gui). The backend
+# runs fully headless without any of them.
+matplotlib==3.9.2         # OPTIONAL plots + ground-track map
+PyQt5==5.15.11            # OPTIONAL operator GUI (REST client of the API)
+requests==2.34.2          # OPTIONAL — used only by the GUI REST client
+
+# --- Testing ---
+pytest==9.1.1
+
+# =============================================================================
+# EXPLICITLY EXCLUDED — never install these in the ground station:
+#   torch, tensorflow, transformers  (heavyweight; Phase 4 uses sklearn)
+#   blockchain / web3 packages       (fantasy modules quarantined)
+#   quantum / qiskit packages        (fantasy modules quarantined)
+# =============================================================================

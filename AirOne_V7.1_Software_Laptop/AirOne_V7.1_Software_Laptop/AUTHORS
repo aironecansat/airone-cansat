@@ -1,0 +1,14 @@
+AirOne V7.1 — CanSat Ground Station & AI Scientific Analysis Platform
+====================================================================
+
+Authored and maintained by:
+
+    TEAM AIRONE
+
+All ground-station software, the ESP32 CanSat flight firmware, the scientific
+analysis engine, the machine-learning tier, the security stack, and the full
+documentation set in this repository are the work of Team AirOne.
+
+Project: AirOne V7.1
+Role:    CanSat competition ground station + AI scientific analysis platform
+Owner:   Team AirOne

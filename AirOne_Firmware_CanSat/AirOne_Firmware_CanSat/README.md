@@ -1,122 +1,228 @@
-# AirOne — PACKAGE 1 of 2 — FIRMWARE (flash onto the CanSat ESP32)
+# AirOne CanSat — Flight Firmware (ESP32-WROVER-E)
 
-This package contains ONLY the flight firmware. The ground-station software for the laptop is in the `AirOne_Software_Laptop/` folder of this repository.
+This folder holds the firmware that runs inside the CanSat. The laptop ground-station software is in [`AirOne_Software_Laptop/`](../../AirOne_Software_Laptop/AirOne_Software_Laptop/). The full system description (every chip, missions, ground station, compliance) is in the [repository README](../../README.md).
+
+| | |
+|---|---|
+| Board | ESP32-WROVER-E-N16R8 (Arduino board **ESP32 Wrover Module**) |
+| Build | ✅ Compiles on esp32 core 2.0.17: **391,802 B flash (29 %)**, **33,024 B static RAM (10 %)** |
+| Hardware test | ❌ Not yet run on the flight board — bench-test every sensor first |
+| Telemetry | 2 Hz binary frames, CRC-32, optional HMAC-SHA256 tag, JSON payload |
+
+> ⚠️ **Radio:** the code drives a **UART** E22 (transparent mode, M0/M1/AUX). The parts list's **E22-400M30S is an SPI (SX1268) module** and will not work with this driver. Use an E22-400T30S/D, or replace the radio code with an SX1268 driver (for example RadioLib). See the repository README, section 1.
 
 ---
 
-# AirOne CanSat Flight Firmware (ESP32)
-
-Reference firmware for the AirOne CanSat. It reads the real sensor suite
-and transmits telemetry over a **LoRa E22** module (UART, transparent mode)
-using the **exact AirOne binary frame protocol** the ground station parses.
-
 ## Files
-- `airone_cansat/airone_cansat.ino` — main sketch (sensor reads + telemetry loop)
-- `airone_cansat/airone_frame.h` — binary framing + CRC32 (matches
-  `src/telemetry/protocol.py` byte-for-byte; verified in CI-style test)
 
-## Protocol compatibility (verified)
-The C frame builder produces frames **identical** to the Python
-`protocol.pack_frame`, and the Python parser unpacks the C output with a valid
-CRC. Frame layout (little-endian):
-
-```
-MAGIC A1 60 4E 45 | VER 0x71 | TYPE | SEQ u32 | TS_US u64 | LEN u16 | FLAGS u8 | PAYLOAD | [AUTH_TAG 8] | CRC32 u32
-```
-
-CRC32 = standard CRC-32/ISO-HDLC (== Python `binascii.crc32`), covering
-everything before it (including the tag when present).
-
-## Link authentication (optional, recommended)
-Set `AIRONE_LINK_KEY_HEX` at the top of the `.ino` (or via a build define) to a
-hex key of **at least 16 bytes** — the same value as `AIRONE_LINK_KEY` on the
-ground station. Every frame then carries `FLAGS |= 0x08` and an 8-byte
-`HMAC-SHA256(key, header‖payload)` tag (`airone_pack_frame_auth`, portable
-SHA-256 in `airone_frame.h`, verified against RFC 4231 and byte-for-byte
-against the Python implementation). With an empty key the firmware prints
-`LINK AUTH: NOT_CONFIGURED` at boot and sends plain frames. Keys shorter than
-16 bytes are refused (frame not sent). The tag authenticates origin and
-integrity only — telemetry is **not** encrypted on air. Rotate the key per
-campaign; anyone with the flash image can read it.
-
-The PAYLOAD is UTF-8 JSON: `{field_name: {"value", "unit", "sensor_id"}}`.
-Field names match the ground-station pipeline exactly (see the header comment
-in the `.ino`). Temperatures are transmitted in **Kelvin** (the canonical unit
-of the `*_temperature` fields).
-
-## Scientific honesty
-A field is included **only** when its sensor read succeeds. A failed or
-un-wired sensor is **omitted** — the firmware never transmits a fabricated `0`.
-Missing fields are treated as absent by the ground station, not as valid zero.
-
-## Required Arduino libraries
-Install with the Arduino Library Manager (board: **ESP32 Wrover Module**, esp32 core 2.0.x or 3.x):
-
-| Library | Used for |
+| File | Contents |
 |---|---|
-| Adafruit BME680 Library | BME688 (temperature, humidity, pressure, gas resistance) |
-| SparkFun BMP581 Arduino Library | BMP581 high-resolution pressure |
-| Sensirion I2C SGP41 + Sensirion Gas Index Algorithm | SGP41 VOC/NOx index |
-| DFRobot_ENS160 | ENS160 TVOC / eCO₂ / AQI |
-| Adafruit VEML6075 Library | UV-A / UV-B |
-| ClosedCube OPT3001 | Ambient light |
-| Adafruit MMC56x3 | MMC5603 magnetometer |
-| Adafruit INA219 | Battery voltage / current |
-| SparkFun BMI270 Arduino Library | BMI270 IMU (SPI) |
-| TinyGPSPlus | MAX-M10S GNSS |
-| RTClib (Adafruit) | DS3231 real-time clock |
-| Adafruit FRAM I2C | MB85RC512 FRAM (persistent sequence + mission state) |
+| `airone_cansat/airone_cansat.ino` | Pin map, sensor drivers, altitude filter, state machine, FRAM persistence, timekeeping, Geiger ISR, telemetry loop |
+| `airone_cansat/airone_frame.h` | Frame packer, CRC-32, portable SHA-256 and HMAC-SHA256 (no mbedtls), hex key parser. Also compiles on a PC for the parity test against Python |
+| `docs/hardware_connection.md` | Wiring, E22 configuration, troubleshooting |
+| `docs/telemetry_protocol.md` | Frame specification |
+| `docs/security_model.md` | Link authentication design |
+
+---
+
+## Build and flash
+
+### Libraries (Arduino Library Manager)
+
+| Library | Part | Bus |
+|---|---|---|
+| Adafruit BME680 Library | BME688 | I²C |
+| SparkFun BMP581 Arduino Library | BMP581 | I²C |
+| Sensirion I2C SGP41 | SGP41 | I²C |
+| Sensirion Gas Index Algorithm | SGP41 VOC/NOx index | — |
+| DFRobot_ENS160 | ENS160 | I²C |
+| Adafruit VEML6075 Library | VEML6075 | I²C |
+| ClosedCube OPT3001 | OPT3001 | I²C |
+| Adafruit MMC56x3 | MMC5603 | I²C |
+| Adafruit INA219 | INA219 | I²C |
+| RTClib (Adafruit) | DS3231 | I²C |
+| Adafruit FRAM I2C | MB85RC512 (via `Adafruit_EEPROM_I2C`) | I²C |
+| SparkFun BMI270 Arduino Library | BMI270 | SPI |
+| TinyGPSPlus | MAX-M10S | UART2 |
 
 Dependencies: Adafruit BusIO, Adafruit Unified Sensor, Sensirion Core.
 
-Disable any sensor you have not fitted with its `ENABLE_*` flag (top of the
-`.ino`); that field is then simply never transmitted.
+### Arduino IDE
 
-## Mission state machine
-`BOOT → SELF_TEST → PRELAUNCH → ASCENT → APOGEE → DESCENT → LANDED`
+1. Install the **esp32** board package by Espressif (2.0.x tested).
+2. Tools → Board → **ESP32 Wrover Module**. Upload speed 921600.
+3. Open `airone_cansat/airone_cansat.ino`, then compile and upload.
+4. Serial monitor at **115200**. Each device prints `OK` or `FAIL` at boot.
 
-The state is sent in every frame as `mission_state` (string) and
-`mission_state_code` (0–6). Sequence number and state are saved to FRAM, so a
-brownout/reset mid-flight resumes in the correct phase. A TPS3823 hardware
-watchdog is strobed every cycle.
+### arduino-cli
 
-## Secondary mission
-The firmware also collects the data for the **AirChem-Rad** secondary mission
-(vertical profiles of air chemistry, UV and ionising radiation, plus descent
-spin dynamics). See [`SECONDARY_MISSION.md`](../../SECONDARY_MISSION.md) in the
-repository root.
+```bash
+arduino-cli core install esp32:esp32@2.0.17
+arduino-cli compile -b esp32:esp32:esp32wrover airone_cansat
+arduino-cli upload  -b esp32:esp32:esp32wrover -p /dev/ttyUSB0 airone_cansat
+# with a link key (never commit the key):
+arduino-cli compile -b esp32:esp32:esp32wrover \
+  --build-property 'compiler.cpp.extra_flags=-DAIRONE_LINK_KEY_HEX="\"00112233445566778899aabbccddeeff\""' airone_cansat
+```
 
-## Pin map (ESP32-WROVER-E)
+### Compile-time options
 
-| Function | ESP32 pin(s) | Notes |
+| Option | Default | Effect |
 |---|---|---|
-| I²C bus | SDA 21, SCL 22 | All I²C sensors sit behind a PCA9548A mux at 0x70 |
-| SPI bus | SCK 18, MISO 19, MOSI 23 | Shared |
-| BMI270 IMU | CS 15 | SPI |
-| MicroSD | CS 5 | Kept deselected by the flight loop |
-| W25Q128 NOR flash | CS 4 | Kept deselected |
-| E22-400M30S LoRa | UART1: RX 16 ← TXD, TX 17 → RXD; M0 13, M1 14, AUX 35 | Transparent mode, 115200 baud |
-| MAX-M10S GNSS | UART2: RX 25 ← TXD, TX 26 → RXD | 9600 baud |
-| SEN0463 Geiger | GPIO39 | Pulse input (ISR, rolling 60 s CPM) |
-| TPS3823 watchdog | GPIO32 | WDI strobe |
+| `ENABLE_BME688` … `ENABLE_I2C_MUX` | 1 | Set to 0 to remove a device; its fields are then never sent |
+| `E22_AUTOCONFIG` | 0 | 1 = program the CanSat E22 at boot (115200 UART, 62.5 kbps air rate, channel 23, 30 dBm, transparent) with the volatile `C2` command |
+| `AIRONE_LINK_KEY_HEX` | `""` | Hex key, at least 32 hex characters. Empty = unauthenticated frames. Too short = no frames are sent |
+| `TELEMETRY_PERIOD_MS` | 500 | Frame period. Use 1000 if the radio reports AUX busy |
+| `JSON_BUF_SIZE` | 3072 | Payload buffer (a full payload is ≈2,534 B) |
+| `E22_CHANNEL` | 23 | 410 + channel MHz (23 → 433 MHz) |
 
-| Mux channel | Devices |
+### Serial commands
+
+| Key | Action |
+|---|---|
+| `S` | Print state, sequence, health mask, relative altitude, vertical speed, resumed flag |
+| `R` | Clear the FRAM mission record, reset the sequence and restart SELF_TEST (do this before each flight) |
+
+---
+
+## Pin map
+
+| Function | GPIO | Notes |
+|---|---|---|
+| I²C SDA / SCL | 21 / 22 | 400 kHz, behind a PCA9548A at 0x70 |
+| SPI SCK / MISO / MOSI | 18 / 19 / 23 | Shared |
+| BMI270 CS | 15 | |
+| MicroSD CS / W25Q128 CS | 5 / 4 | Held HIGH (not used yet) |
+| E22 UART1 RX / TX | 16 / 17 | ⚠️ PSRAM pins on WROVER — check the PCB |
+| E22 M0 / M1 / AUX | 13 / 14 / 35 | AUX is input-only, HIGH = idle |
+| GNSS UART2 RX / TX | 25 / 26 | 9600 baud |
+| Geiger pulse | 39 | Input-only, needs an external pull-up, falling edge |
+| TPS3823 WDI | 32 | Watchdog timeout ≈1.6 s |
+
+| Mux ch | Devices (address) |
 |---|---|
 | 0 | BME688 (0x76), BMP581 (0x47) |
 | 1 | SGP41 (0x59), ENS160 (0x52) |
 | 2 | VEML6075 (0x10), OPT3001 (0x44) |
 | 3 | INA219 (0x40), MMC5603 (0x30), DS3231 (0x68), FRAM (0x50) |
 
-> **Check on your PCB:** on WROVER modules GPIO16/17 are normally used by the
-> internal PSRAM. The firmware follows the hardware spec, but if the radio is
-> silent, check this first. GPIO35 and GPIO39 are input-only with no internal
-> pull-ups.
+---
 
-> **Link budget:** a full frame is about 2.6 kB. Both E22 modules must use
-> 115200 baud UART and the 62.5 kbps air rate for 2 Hz telemetry; otherwise
-> set `TELEMETRY_PERIOD_MS` to 1000.
+## Drivers and device settings
 
-> The firmware has **not** yet been compiled or flown on the real hardware —
-> bench-test every sensor before flight.
+| Part | Start-up check | Configuration | Per-cycle behaviour |
+|---|---|---|---|
+| BME688 | `begin(0x76)` | T×8, H×2, P×4, IIR 3, heater 320 °C / 150 ms | T (K), P, RH; gas Ω only if > 0 |
+| BMP581 | `beginI2C() == BMP5_OK` | Library defaults | T (K), P; main altitude source |
+| SGP41 | Serial number read | T/RH compensation from BME688 | 1 Hz; 10 s conditioning; raw ticks + Gas Index (omitted during algorithm warm-up) |
+| ENS160 | `begin() == 0` | Standard mode; T/RH from BME688 each cycle | Status always; AQI/TVOC/eCO₂ only when status 0 or 2 and in range |
+| VEML6075 | `begin()` | 100 ms integration | Raw UV-A/UV-B counts after an ACK check |
+| OPT3001 | ID `0x5449` + config write | Continuous, auto-range, 100 ms (it starts in shutdown) | Lux if no error |
+| MMC5603 | `begin(0x30)` | — | µT, 3 axes |
+| INA219 | `begin()` | 32 V / 2 A calibration (0.1 Ω shunt assumed) | Bus V, mA |
+| BMI270 | `beginSPI(15, 1 MHz)` | ±16 g, ±2000 °/s, 100 Hz | m/s², °/s; > 3 g marks a launch cue |
+| DS3231 | `begin()`, `lostPower()`, plausible year | Synced to a second boundary at boot; set from GNSS ≤ once / 10 min | Timestamp fallback |
+| MB85RC512 | `begin(0x50)` | `Adafruit_EEPROM_I2C` (the FRAM class rejects the 512 Kbit ID) | Saves state every cycle with CRC-8 |
+| MAX-M10S | — | NMEA, 9600 baud | Position if fix < 2 s; time if < 1.5 s |
+| SEN0463 | — | IRAM ISR, 50 µs dead time | Rolling 60 s CPM + total counts |
+| PCA9548A | ACK at 0x70 (absent → flat bus) | Cached channel | Selected before every I²C access |
+| TPS3823 | — | Pulsed first in `setup()` | Pulsed every 500 ms and during long waits |
 
-See `docs/hardware_connection.md` for E22 configuration and troubleshooting.
+**Honest data rule:** a field is sent only when the read succeeded and the value is finite and in range. A failed or missing sensor is left out, never sent as `0`.
+
+---
+
+## State machine
+
+`BOOT(0) → SELF_TEST(1) → PRELAUNCH(2) → ASCENT(3) → APOGEE(4) → DESCENT(5) → LANDED(6)`
+
+| Constant | Value | Used for |
+|---|---|---|
+| `BASELINE_SAMPLES` | 10 (5 s) | Launch-site altitude average |
+| `SELF_TEST_TIMEOUT_MS` | 30 s | Go on without a barometer |
+| `PRELAUNCH_MIN_MS` | 5 s | Minimum time on the pad |
+| `LAUNCH_ALT_M` / `LAUNCH_VZ_MS` | 2 m / 0.5 m/s | Launch detection (or > 3 g within 2 s), 2 frames |
+| `ASCENT_MIN_MS` | 5 s | Minimum ascent before apogee can be called |
+| `APOGEE_VZ_MS` | −0.3 m/s | Apogee detection, 2 frames |
+| `ASCENT_TIMEOUT_MS` | 300 s | Failsafe → APOGEE |
+| `APOGEE_HOLD_MS` | 1 s | APOGEE visible in ≥ 2 frames |
+| `LANDED_WINDOW_M` / `LANDED_STABLE_MS` / `LANDED_VZ_MS` | ±5 m / 10 s / 0.3 m/s | Landing detection |
+
+Altitude uses the ISA formula `44330 × (1 − (p/101325)^0.190295)` with an EMA filter (α 0.5) and a vertical-speed filter (α 0.4). BMP581 is used first and BME688 is the fallback.
+
+**Brownout recovery:** sequence, state, baseline and maximum altitude are saved to FRAM every cycle. After a reset the sequence always continues. ASCENT, APOGEE and DESCENT are resumed; other states start a new pad session.
+
+| FRAM addr | Content |
+|---|---|
+| 0x00–0x03 | Sequence (uint32 LE) |
+| 0x04 | State |
+| 0x05 | Sentinel 0xA1 |
+| 0x06 | CRC-8 of 0x00–0x04 |
+| 0x10–0x13 | Baseline altitude (float) |
+| 0x14 | Baseline valid |
+| 0x15–0x18 | Max relative altitude (float) |
+| 0x19 | CRC-8 of 0x10–0x18 |
+
+**Timestamps:** GNSS UTC → DS3231 + `millis()` → 0 (0 = "use the ground receive time").
+
+---
+
+## Telemetry frame
+
+```text
+MAGIC A1 60 4E 45 | VER 0x71 | TYPE u8 | SEQ u32 | TS_US u64 | LEN u16 | FLAGS u8 | PAYLOAD (LEN B) | [TAG 8 B] | CRC32 u32
+```
+
+| Offset | Size | Field | Notes |
+|---|---|---|---|
+| 0 | 4 | MAGIC | `A1 60 4E 45` |
+| 4 | 1 | VERSION | `0x71` wire-protocol ID |
+| 5 | 1 | TYPE | `0x01` SENSOR_DATA (0x02–0x08 reserved: GPS, SYSTEM_STATUS, COMMAND, ACK, HEARTBEAT, FEC_DATA, ERROR) |
+| 6 | 4 | SEQUENCE | uint32 LE, kept across resets |
+| 10 | 8 | TIMESTAMP_US | uint64 LE, µs since Unix epoch |
+| 18 | 2 | PAYLOAD_LEN | uint16 LE, payload only |
+| 20 | 1 | FLAGS | `0x08` = authenticated (0x01 FEC, 0x02 compressed, 0x04 encrypted are defined but not used) |
+| 21 | N | PAYLOAD | UTF-8 JSON |
+| 21+N | 8 | TAG | Only with 0x08: HMAC-SHA256(key, header‖payload)[0:8] |
+| end−4 | 4 | CRC32 | CRC-32/ISO-HDLC over all bytes before it (= Python `binascii.crc32`) |
+
+Payload: `{"<field>":{"value":<number|string>,"unit":"<unit>","sensor_id":"<sensor>"}, ...}`
+
+| Group | Fields (unit) |
+|---|---|
+| Barometry | `bme688_temperature` (K), `bme688_pressure` (Pa), `bme688_humidity` (%), `bme688_gas_resistance` (Ohm), `bmp581_temperature` (K), `bmp581_pressure` (Pa) |
+| Gas | `sgp41_voc_raw`, `sgp41_nox_raw` (ticks), `sgp41_voc`, `sgp41_nox` (index), `ens160_status` (flag), `ens160_aqi` (index), `ens160_tvoc` (ppb), `ens160_eco2` (ppm) |
+| Light | `veml6075_uva`, `veml6075_uvb` (counts), `opt3001_lux` (lux) |
+| Motion | `mag_x/y/z` (uT), `imu_accel_x/y/z` (m/s^2), `imu_gyro_x/y/z` (deg/s) |
+| Power | `battery_voltage` (V), `battery_current_ma` (mA) |
+| Radiation | `radiation_cpm` (CPM), `radiation_counts` (counts) |
+| GNSS | `gnss_lat`, `gnss_lon` (deg), `gnss_altitude` (m) |
+| Flight | `altitude_rel` (m), `vertical_speed` (m/s), `mission_state` (string), `mission_state_code` (0–6), `sensor_health_mask` (bitmask) |
+
+`sensor_health_mask` bits: 0 BME688, 1 BMP581, 2 SGP41, 3 ENS160, 4 VEML6075, 5 OPT3001, 6 MMC5603, 7 INA219, 8 BMI270, 9 DS3231, 10 FRAM, 11 PCA9548A (`0xFFF` = all OK).
+
+Size with all 38 fields: **≈2,534 B payload, ≈2,560 B frame** (+8 B with the tag).
+
+---
+
+## Efficiency notes
+
+- Frame and JSON buffers are static (not on the 8 KB loop stack). The UART TX buffer holds a whole frame, so sending does not block the loop.
+- GNSS is parsed on every loop pass. Sensors are read one mux channel at a time, and the mux channel is cached.
+- SGP41 runs at 1 Hz (its specified rate), so it heats half as often.
+- **Radio is the bottleneck:** a full frame takes ≈0.22 s on the 115200 UART and ≥0.33 s on air at 62.5 kbps, so the transmitter is on **≥65 %** of the time at 2 Hz. The JSON payload is about 17× larger than an equivalent binary payload (~150 B). Use 1 Hz, a smaller field set, or a binary packet type to cut air time, power and duty cycle.
+- Wi-Fi/BT are never started. `setCpuFrequencyMhz(80)` would cut ESP32 current further; the loop needs very little CPU.
+- FRAM endurance (~10¹³ writes) is enough for a write every 500 ms for far longer than the mission.
+
+---
+
+## Hardware checks (cannot be fixed in firmware)
+
+- **E22 type:** UART (E22-xxxT) vs. SPI (E22-400M30S) — see the top of this file.
+- **GPIO16/17** are PSRAM pins on WROVER-E modules — confirm the radio really connects there.
+- **GPIO35 / GPIO39** are input-only with no internal pull-ups — the board must provide them.
+- **GPIO39 erratum:** spurious edges are possible while ADC1/Wi-Fi are active. Neither is used here, and the ISR has a dead-time filter.
+- **INA219 shunt:** calibration assumes 0.1 Ω.
+- **UK radio rules:** 433 MHz licence-exempt use is generally limited to 10 mW e.r.p. and a 10 % duty cycle. Confirm the allowed limits with the organisers (repository README, section 10).
+
+See [`docs/hardware_connection.md`](docs/hardware_connection.md) for E22 setup and troubleshooting.

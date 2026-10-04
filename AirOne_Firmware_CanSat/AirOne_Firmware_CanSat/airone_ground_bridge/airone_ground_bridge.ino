@@ -101,6 +101,7 @@ static void handle_packet(const uint8_t* buf, size_t len, float rssi, float snr)
 }
 
 void loop() {
+  radio_maintain(true);   // re-tries a failed init every RADIO_RETRY_MS
   if (!g_radio_ok || !g_radio_irq) return;
   static uint8_t buf[RADIO_MAX_PACKET];
   size_t len = 0;

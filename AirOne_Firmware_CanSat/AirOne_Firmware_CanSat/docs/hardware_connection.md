@@ -94,7 +94,7 @@ access.
 | —         | NRST    | not connected (assumed) |
 | GPIO14    | RXEN    | driven LOW at boot |
 | GPIO33    | TXEN    | driven LOW at boot |
-| 3.3 V     | VCC     | |
+| 5 V boost (TPS61022 via TPS22919) | VCC | if the switch enable is a GPIO, set `-DRADIO_PIN_PWR_EN=<gpio>` (default -1 = not driven) |
 | GND       | GND     | |
 
 > **Pin assumption — verify.** An older V7.1 map put RXEN on GPIO32,
@@ -209,8 +209,8 @@ Each frame the CanSat sends is CRC-protected. When frames arrive:
 | Symptom | Likely cause / fix |
 |---------|--------------------|
 | `NOT_CONFIGURED` but the bridge is plugged in | Wrong/aliased port. Pass `--serial-port` explicitly and check `ls /dev/ttyUSB*`. On Linux, add yourself to `dialout`. |
-| Flight serial log shows `[RADIO] SX1268 init FAILED (-2) chip not found` | `RADIOLIB_ERR_CHIP_NOT_FOUND`: wrong NSS/BUSY pin, no power, or SPI wiring fault. Check the pin flags and the 3.3 V rail. |
-| `init FAILED (-705)` BUSY never released / `(-703)` invalid TCXO voltage | TCXO voltage or BUSY line issue. Confirm `RADIO_TCXO_V` against the E22 datasheet and that BUSY goes to the configured GPIO. |
+| Flight serial log shows `[RADIO] SX1268 init FAILED (-2) chip not found` | Radio rail not switched on (set `RADIO_PIN_PWR_EN` if the TPS22919 enable is a GPIO), or `RADIOLIB_ERR_CHIP_NOT_FOUND`: wrong NSS/BUSY pin, no power, or SPI wiring fault. Check the pin flags and the 3.3 V rail. |
+| `init FAILED (-705)` BUSY never released (100 ms per-command timeout; the firmware retries every 10 s) / `(-703)` invalid TCXO voltage | TCXO voltage or BUSY line issue. Confirm `RADIO_TCXO_V` against the E22 datasheet and that BUSY goes to the configured GPIO. |
 | Type `L` in the flight serial console | Prints storage status and radio status (`tx`, `skipped(duty/busy)`, `errors`, `last_err`). Use it to see whether frames are actually being sent. |
 | Bridge receives nothing | LoRa parameter mismatch (frequency/SF/BW/sync word/CR). Both builds must use the same `airone_radio.h`. Also check the RXEN/TXEN wiring, because an RF switch left in the wrong state means no RX. |
 | Bridge receives frames but forwards none | HMAC key mismatch (frames fail verification) or duplicate sequence numbers. Rebuild with `-DBRIDGE_DEBUG=1` and watch the `#RX bad frame` lines. |

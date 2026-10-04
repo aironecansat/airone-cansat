@@ -225,6 +225,12 @@ static const int PIN_FLASH_CS     = 4;    // W25Q128 NOR flash (fallback log)
 static const int PIN_SD_CS        = 5;    // MicroSD (primary log)
 
 static const int PIN_WDT_WDI      = 32;   // TPS3823 WDI, timeout 1.6 s typ
+// TPS22919 load-switch enable for the MAX-M10S rail. V7.1 routes EN_GNSS to
+// GPIO12 with a 10 k pull-down (strap-safe), i.e. the GNSS is OFF unless the
+// firmware drives it HIGH. -1 = not driven (rail hard-wired on).
+#ifndef PIN_EN_GNSS
+#define PIN_EN_GNSS 12
+#endif
 
 // E22-400M30S / SX1268: SPI on the shared VSPI bus. Pins are defined in
 // airone_radio.h (RADIO_PIN_NSS/BUSY/DIO1/NRST/RXEN/TXEN, -D overridable).
@@ -931,6 +937,10 @@ void setup() {
   pinMode(RADIO_PIN_RXEN, OUTPUT); digitalWrite(RADIO_PIN_RXEN, LOW);
   pinMode(RADIO_PIN_TXEN, OUTPUT); digitalWrite(RADIO_PIN_TXEN, LOW);
 
+  // ---- Power-gated rails ON (TPS22919 load switches) ---------------------
+  if (PIN_EN_GNSS >= 0) { pinMode(PIN_EN_GNSS, OUTPUT); digitalWrite(PIN_EN_GNSS, HIGH); }
+  // (radio boost enable, if wired, is RADIO_PIN_PWR_EN -- handled in radio_begin)
+
   Serial.begin(115200);
   wdt_safe_delay(200);
   Serial.println(F(FW_VERSION_STR " CanSat firmware starting..."));
@@ -941,6 +951,7 @@ void setup() {
   spi_bus_init();   // shared-bus mutex: BMI270, SX1268, MicroSD, W25Q128
 
 #if ENABLE_RADIO
+  g_radio_wait_hook = wdt_kick_ext;   // keep TPS3823 alive during RadioLib waits
   radio_begin(false);
   wdt_kick();
 #endif
@@ -1175,6 +1186,7 @@ void loop() {
   handle_serial_commands();
 #if ENABLE_RADIO
   radio_poll();     // completes a LoRa packet in flight (non-blocking)
+  radio_maintain(false);   // re-tries a failed init every RADIO_RETRY_MS
 #endif
 
   uint32_t now = millis();

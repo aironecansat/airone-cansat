@@ -82,6 +82,9 @@ arduino-cli compile -b esp32:esp32:esp32wrover \
 | `ENABLE_BME688` … `ENABLE_I2C_MUX` | 1 | Set to 0 to remove a device; its fields are then never sent |
 | `ENABLE_STORAGE` / `ENABLE_RADIO` | 1 | Set to 0 to disable SD/flash logging or the LoRa downlink |
 | `RADIO_PIN_NSS/BUSY/DIO1/NRST/RXEN/TXEN` | 13/27/35/-1/14/33 | E22 control pins (see warning above) |
+| `RADIO_PIN_PWR_EN` | -1 | Enable pin of the TPS22919 switch gating the TPS61022 5 V radio boost. **Set it if your board pulls that enable LOW**, otherwise the E22 is unpowered |
+| `PIN_EN_GNSS` | 12 | TPS22919 enable for the MAX-M10S rail (V7.1: GPIO12 with 10 k pull-down), driven HIGH at boot; -1 = not driven |
+| `RADIO_BUSY_TIMEOUT_MS` / `RADIO_RETRY_MS` | 100 / 10000 | Per-command BUSY timeout (keeps a dead module from outlasting the 1.6 s TPS3823 watchdog); retry interval for a failed radio init |
 | `RADIO_FREQ_MHZ`, `RADIO_BW_KHZ`, `RADIO_SF`, `RADIO_CR`, `RADIO_SYNC` | 433.92, 250, 7, 5, 0x12 | LoRa link parameters — **must match the ground bridge** |
 | `RADIO_SX_POWER_DBM` | -9 | SX1268 core power. The E22's PA adds gain on top; measure before raising (10 mW e.r.p. limit) |
 | `RADIO_DUTY_PCT` | 10 | Transmitter on-time limit. Frames that would exceed it are not sent by radio (still logged) |
@@ -235,6 +238,7 @@ Size with all 38 fields: **≈2,534 B payload, ≈2,560 B frame** (+8 B with the
 
 ## Hardware checks (cannot be fixed in firmware)
 
+- **Load-switch enables** — confirm which GPIOs drive the two TPS22919 enables (GNSS rail and the 5 V LoRa boost) and set `PIN_EN_GNSS` / `RADIO_PIN_PWR_EN` accordingly. If the radio boost enable is pulled low and not set in firmware, the radio will report `chip not found`.
 - **E22 control pins** — confirm NSS/BUSY/DIO1/RXEN/TXEN/NRST against the schematic (see the top of this file). GPIO16/17 are PSRAM pins on WROVER-E and are not used.
 - **GPIO39** is input-only with no internal pull-up — the board must provide it. GPIO35 (DIO1) is driven push-pull by the SX1268, so it needs none.
 - **GPIO39 erratum:** spurious edges are possible while ADC1/Wi-Fi are active. Neither is used here, and the ISR has a dead-time filter.

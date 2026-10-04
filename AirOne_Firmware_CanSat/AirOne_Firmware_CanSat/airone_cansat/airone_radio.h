@@ -49,6 +49,15 @@
 #ifndef RADIO_PIN_TXEN
 #define RADIO_PIN_TXEN  33      // E22 TXEN (PA path)
 #endif
+#ifndef RADIO_PIN_PWR_EN
+// Enable of the TPS22919 load switch that gates the TPS61022 5 V boost feeding
+// the E22. -1 = not driven by firmware (switch hard-wired on / pulled up).
+// If your board pulls this enable LOW, you MUST set it, or the radio is unpowered.
+#define RADIO_PIN_PWR_EN -1
+#endif
+#ifndef RADIO_RETRY_MS
+#define RADIO_RETRY_MS  10000   // re-try a failed radio init this often
+#endif
 
 // ---- Link parameters (MUST match the ground bridge) ---------------------
 #ifndef RADIO_FREQ_MHZ
@@ -84,9 +93,38 @@
 #endif
 #define RADIO_MAX_PACKET 255
 
-static SX1268 g_radio = new Module(RADIO_PIN_NSS, RADIO_PIN_DIO1,
-                                   RADIO_PIN_NRST < 0 ? RADIOLIB_NC : RADIO_PIN_NRST,
-                                   RADIO_PIN_BUSY, SPI);
+#ifndef RADIO_BUSY_TIMEOUT_MS
+#define RADIO_BUSY_TIMEOUT_MS 100   // RadioLib default is 1000 ms per SPI command
+#endif
+
+// Optional hook called while RadioLib waits (BUSY polling, delays). The flight
+// sketch points it at its TPS3823 strobe: with a dead/missing module RadioLib's
+// chip search (10 tries x BUSY timeouts) could otherwise outlast the 1.6 s
+// hardware watchdog and boot-loop the whole CanSat.
+static void (*g_radio_wait_hook)() = nullptr;
+
+class AironeRadioHal : public ArduinoHal {
+ public:
+  explicit AironeRadioHal(SPIClass& spi) : ArduinoHal(spi) {}
+  void yield() override {
+    if (g_radio_wait_hook) g_radio_wait_hook();
+    ArduinoHal::yield();
+  }
+  void delay(RadioLibTime_t ms) override {
+    while (ms > 0) {
+      RadioLibTime_t step = ms > 100 ? 100 : ms;
+      if (g_radio_wait_hook) g_radio_wait_hook();
+      ArduinoHal::delay(step);
+      ms -= step;
+    }
+  }
+};
+
+static AironeRadioHal g_radio_hal(SPI);
+static Module g_radio_mod(&g_radio_hal, RADIO_PIN_NSS, RADIO_PIN_DIO1,
+                          RADIO_PIN_NRST < 0 ? RADIOLIB_NC : RADIO_PIN_NRST,
+                          RADIO_PIN_BUSY);
+static SX1268 g_radio(&g_radio_mod);
 static bool g_radio_ok = false;
 static volatile bool g_radio_irq = false;
 static bool g_radio_tx_busy = false;
@@ -109,8 +147,16 @@ static const char* radio_err_hint(int16_t e) {
 // Called once from setup() after SPI.begin() and spi_bus_init().
 // Leaves the radio in RX when rx_mode is true (ground bridge), else standby.
 static bool radio_begin(bool rx_mode) {
+  static bool powered = false;
+  if (RADIO_PIN_PWR_EN >= 0 && !powered) {
+    pinMode(RADIO_PIN_PWR_EN, OUTPUT);
+    digitalWrite(RADIO_PIN_PWR_EN, HIGH);
+    delay(20);                        // boost + module start-up
+    powered = true;
+  }
   SpiLock lk(2000);
   if (!lk.ok()) { Serial.println(F("[RADIO] SPI bus lock timeout")); return false; }
+  g_radio_mod.spiConfig.timeout = RADIO_BUSY_TIMEOUT_MS;
   g_radio.setRfSwitchPins(RADIO_PIN_RXEN, RADIO_PIN_TXEN);
   int16_t st = g_radio.begin(RADIO_FREQ_MHZ, RADIO_BW_KHZ, RADIO_SF, RADIO_CR, RADIO_SYNC,
                              RADIO_SX_POWER_DBM, RADIO_PREAMBLE, RADIO_TCXO_V, false);
@@ -130,10 +176,21 @@ static bool radio_begin(bool rx_mode) {
   Serial.printf("[RADIO] SX1268 OK: %.3f MHz BW%.0f SF%d CR4/%d sync 0x%02X, SX power %d dBm, duty <= %d%%\n",
                 (double)RADIO_FREQ_MHZ, (double)RADIO_BW_KHZ, RADIO_SF, RADIO_CR, RADIO_SYNC,
                 RADIO_SX_POWER_DBM, RADIO_DUTY_PCT);
-  Serial.printf("[RADIO] pins NSS=%d BUSY=%d DIO1=%d NRST=%d RXEN=%d TXEN=%d\n",
+  Serial.printf("[RADIO] pins NSS=%d BUSY=%d DIO1=%d NRST=%d RXEN=%d TXEN=%d PWR_EN=%d\n",
                 RADIO_PIN_NSS, RADIO_PIN_BUSY, RADIO_PIN_DIO1, RADIO_PIN_NRST,
-                RADIO_PIN_RXEN, RADIO_PIN_TXEN);
+                RADIO_PIN_RXEN, RADIO_PIN_TXEN, RADIO_PIN_PWR_EN);
   return true;
+}
+
+// Re-try a failed init every RADIO_RETRY_MS (e.g. module powered late or a
+// loose connector). Cheap no-op while the radio is up.
+static void radio_maintain(bool rx_mode) {
+  static uint32_t last_try = 0;
+  if (g_radio_ok) return;
+  uint32_t now = millis();
+  if (now - last_try < RADIO_RETRY_MS) return;
+  last_try = now;
+  radio_begin(rx_mode);
 }
 
 // Airtime in ms for a packet of len bytes with the configured parameters.

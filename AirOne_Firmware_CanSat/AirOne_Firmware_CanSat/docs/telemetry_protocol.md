@@ -57,6 +57,34 @@ Offset  Size  Field
 | 0x06 | HEARTBEAT |
 | 0x07 | FEC_DATA |
 | 0x08 | ERROR |
+| 0x10 | COMPACT (radio link only, see below — never reaches the ground station) |
+
+### Compact radio payload (PACKET_TYPE 0x10)
+
+One SX1268 LoRa packet holds at most 255 bytes. The JSON `SENSOR_DATA`
+payload is about 2.5 kB, so it can't be sent over the air as-is. The CanSat
+therefore sends the **same measurements** as a fixed-schema binary payload
+(`airone_compact.h`), wrapped in an ordinary AirOne frame: same header,
+sequence, timestamp, optional HMAC tag and CRC32. The ground bridge
+(`airone_ground_bridge/`) verifies the frame and expands it back into JSON. It
+adds the ground-measured `radio_rssi` / `radio_snr` and re-emits it over USB as
+a normal `0x01 SENSOR_DATA` frame with the same sequence/timestamp, re-signed
+when a key is configured. The ground station's parser therefore needs no
+change and continues to reject `0x10` as an unknown type if it ever sees one.
+
+```
+Offset  Size  Field (little-endian)
+0       1     schema version (1)
+1       1     flags: bit0 = altitude_rel / vertical_speed come from BME688 (else BMP581)
+2       8     presence mask: bit i set = field i present
+10      4*k   one 4-byte value per present field, in index order:
+              float32 | int32 = deg*1e7 (gnss_lat/lon) | uint32 (counters/enums/masks)
+```
+
+There are 39 fields (index order and units in `AC_FIELDS`). Fields absent from
+the mask are **absent** from the expanded JSON. Nothing is filled in. A full
+payload is 166 B, and the whole authenticated frame is 199 B. The full 2 Hz
+JSON frames are kept on board (MicroSD, with W25Q128 failover).
 
 ## CRC32
 

@@ -6,8 +6,13 @@
  * mission (vertical profile of atmospheric chemistry, UV and ionising
  * radiation, plus descent spin dynamics). See SECONDARY_MISSION.md.
  *
- * Telemetry goes out over the EBYTE E22-400M30S (UART, transparent mode)
- * using the UNCHANGED AirOne binary frame protocol (airone_frame.h):
+ * Every 2 Hz sample is built as the UNCHANGED AirOne binary frame
+ * (airone_frame.h) and logged by airone_storage.h to MicroSD, with W25Q128
+ * NOR flash as failover. Over the air the EBYTE E22-400M30S (SX1268, SPI,
+ * RadioLib -- airone_radio.h) carries the SAME measurements as a compact
+ * frame (PACKET_TYPE 0x10, airone_compact.h, <= 255 B) with the same
+ * sequence/timestamp. A 10 % duty-cycle limiter applies (UK 433 MHz). The ground
+ * bridge sketch (../airone_ground_bridge) expands it back to the frame below:
  *
  *   Offset  Size  Field
  *   0       4     MAGIC  = A1 60 4E 45
@@ -58,7 +63,8 @@
  * BUG FIXES (numbering = firmware audit)
  *   #1  GNSS RX pin 4 -> GPIO25 (GPIO4 is the W25Q128 flash CS)
  *   #2  GNSS TX pin 2 -> GPIO26 (GPIO2 is a boot strapping pin)
- *   #3  GNSS on UART1 -> UART2; E22 moved to UART1 per hardware spec
+ *   #3  GNSS on UART1 -> UART2 (the E22 UART code has since been replaced
+ *       by the SPI SX1268 driver -- the E22-400M30S has no UART mode)
  *   #4  TPS3823 watchdog strobe on GPIO32 (every 500 ms cycle + during setup)
  *   #5  PCA9548A I2C mux channel selection before every I2C access
  *   #6  ENS160 driver (TVOC / eCO2 / AQI)
@@ -90,8 +96,11 @@
  *   - Frame/payload buffers moved off the 8 KB loop-task stack.
  *   - Unused SPI chip selects (flash, SD) are driven HIGH so they cannot
  *     contend with the BMI270 on the shared SPI bus.
- *   - E22 M0/M1 are actively driven LOW (transparent mode) and AUX is
- *     honoured before each transmission.
+ *   - The old E22 UART/transparent-mode code (M0/M1/AUX on GPIO16/17) could
+ *     never work: the E22-400M30S in the parts list is SPI-only, and
+ *     GPIO16/17 are PSRAM pins on the WROVER. It is replaced by airone_radio.h.
+ *     All SPI users (BMI270, radio, SD, flash) share one bus mutex
+ *     (airone_spibus.h).
  *   - Adafruit_FRAM_I2C::begin() hard-rejects any product ID other than the
  *     MB85RC256V (0x510); the fitted MB85RC512 reports a different ID and
  *     would ALWAYS fail. We use the same library's Adafruit_EEPROM_I2C class
@@ -99,23 +108,21 @@
  *
  * ---------------------------------------------------------------------
  * HARDWARE NOTES THE TEAM MUST CHECK (not fixable in firmware)
- *   ! ESP32-WROVER-E: GPIO16/GPIO17 are wired INSIDE the module to the PSRAM
- *     (CS/CLK) and are not usable as general I/O on WROVER parts. The spec
- *     puts the E22 UART on GPIO16/17, so this firmware follows the spec, but
- *     please verify on the schematic/PCB that the E22 actually reaches the
- *     ESP32 on those pads. If the radio is silent, this is the first suspect.
- *   ! GPIO35 (E22 AUX) and GPIO39 (Geiger) are input-only with NO internal
- *     pull-ups -- the board must provide external pull-ups if the driving
- *     outputs are open-drain.
+ *   ! RADIO PINS ARE AN ASSUMPTION: NSS 13, BUSY 27, DIO1 35, RXEN 14,
+ *     TXEN 33, NRST not connected (re-using the old UART-E22 pads; the V7.1
+ *     map's GPIO32/16/17 clash with the WDT and PSRAM). Verify against the
+ *     PCB and override with -DRADIO_PIN_* if different. NOT hardware-tested.
+ *   ! GPIO35 (radio DIO1) and GPIO39 (Geiger) are input-only with NO internal
+ *     pull-ups -- DIO1 is push-pull from the SX1268; the Geiger output needs
+ *     an external pull-up if it is open-drain.
  *   ! GPIO39 has a documented ESP32 erratum (spurious edges when ADC1/Wi-Fi
  *     are active). This firmware uses neither; the ISR has a dead-time filter.
- *   ! LINK BUDGET: the E22 factory default is 9600 baud UART / 2.4 kbps air
- *     rate. A full frame is ~2.6 kB, i.e. ~42 kbps at 2 Hz. Both E22s
- *     (CanSat and ground) must run 115200 baud UART and the 62.5 kbps air
- *     rate, and even then the link is near its practical limit -- if AUX-busy
- *     warnings appear, raise TELEMETRY_PERIOD_MS to 1000 (1 Hz). Set
- *     E22_AUTOCONFIG to 1 to have this firmware program the CanSat module
- *     (volatile C2 command -- nothing is written to the module's flash).
+ *   ! LINK BUDGET / REGULATORY: a full authenticated compact frame is 199 B,
+ *     ~160 ms airtime at SF7/BW250 (estimate). The 10 % duty-cycle limiter
+ *     therefore lets roughly one frame per ~1.6 s out. Frames in between are
+ *     skipped on air but still logged. SX power defaults to -9 dBm (+ E22 PA
+ *     ~ 10 mW e.r.p. with a 0 dBi antenna -- calculated, NOT measured).
+ *     Measure it before flight. Never transmit without an antenna attached.
  *
  * ---------------------------------------------------------------------
  * REQUIRED LIBRARIES (Arduino Library Manager; suggested versions):
@@ -132,6 +139,8 @@
  *   SparkFun BMI270 Arduino Library  1.0.x
  *   RTClib (Adafruit)                2.1.x  (DS3231)
  *   Adafruit FRAM I2C                2.0.x  (MB85RC512)
+ *   RadioLib                         7.x    (SX1268 / E22-400M30S, built with 7.8.1)
+ *   SD, SPI                          bundled with the ESP32 Arduino core
  *   (+ dependencies: Adafruit BusIO, Adafruit Unified Sensor, Sensirion Core)
  * Board: "ESP32 Wrover Module" (esp32 core 2.0.x or 3.x).
  * The SEN0463 Geiger counter is read by counting pulses in an ISR.
@@ -145,6 +154,9 @@
 #include <time.h>
 
 #include "airone_frame.h"   // binary framing + CRC32 (matches ground station)
+#include "airone_storage.h" // MicroSD + W25Q128 failover logging task, SPI mutex
+#include "airone_radio.h"   // E22-400M30S / SX1268 over SPI (RadioLib)
+#include "airone_compact.h" // compact radio payload (expanded by the ground bridge)
 
 #define FW_VERSION_STR "AirOne"
 
@@ -193,10 +205,11 @@
 #define ENABLE_I2C_MUX 1
 #endif
 
-// 1 = program the E22 at boot (115200 UART, 62.5 kbps air, channel below)
-// using the VOLATILE C2 command. Leave 0 if the module is pre-configured.
-#ifndef E22_AUTOCONFIG
-#define E22_AUTOCONFIG    0
+#ifndef ENABLE_STORAGE
+#define ENABLE_STORAGE 1    // MicroSD + W25Q128 logging
+#endif
+#ifndef ENABLE_RADIO
+#define ENABLE_RADIO 1      // SX1268 LoRa downlink
 #endif
 
 // =====================================================================
@@ -208,18 +221,19 @@ static const int PIN_SPI_SCK      = 18;
 static const int PIN_SPI_MISO     = 19;
 static const int PIN_SPI_MOSI     = 23;
 static const int PIN_BMI270_CS    = 15;
-static const int PIN_FLASH_CS     = 4;    // W25Q128 (kept deselected)
-static const int PIN_SD_CS        = 5;    // MicroSD  (kept deselected)
+static const int PIN_FLASH_CS     = 4;    // W25Q128 NOR flash (fallback log)
+static const int PIN_SD_CS        = 5;    // MicroSD (primary log)
 
 static const int PIN_WDT_WDI      = 32;   // TPS3823 WDI, timeout 1.6 s typ
+// TPS22919 load-switch enable for the MAX-M10S rail. V7.1 routes EN_GNSS to
+// GPIO12 with a 10 k pull-down (strap-safe), i.e. the GNSS is OFF unless the
+// firmware drives it HIGH. -1 = not driven (rail hard-wired on).
+#ifndef PIN_EN_GNSS
+#define PIN_EN_GNSS 12
+#endif
 
-static const int E22_RX_PIN       = 16;   // ESP32 RX1 <- E22 TXD
-static const int E22_TX_PIN       = 17;   // ESP32 TX1 -> E22 RXD
-static const int E22_M0_PIN       = 13;
-static const int E22_M1_PIN       = 14;
-static const int E22_AUX_PIN      = 35;   // input-only, HIGH = idle
-static const uint32_t E22_BAUD    = 115200;  // MUST match ground station
-static const uint8_t  E22_CHANNEL = 23;      // 410 + 23 = 433 MHz
+// E22-400M30S / SX1268: SPI on the shared VSPI bus. Pins are defined in
+// airone_radio.h (RADIO_PIN_NSS/BUSY/DIO1/NRST/RXEN/TXEN, -D overridable).
 
 static const int GNSS_RX_PIN      = 25;   // ESP32 RX2 <- MAX-M10S TXD
 static const int GNSS_TX_PIN      = 26;   // ESP32 TX2 -> MAX-M10S RXD
@@ -336,8 +350,7 @@ static size_t  g_link_key_len = 0;
   bool fram_ok = false;
 #endif
 
-// UARTs (bug #3): E22 on UART1, GNSS on UART2.
-HardwareSerial E22(1);
+// GNSS on UART2 (bug #3). The E22 radio is on SPI, not a UART.
 #if ENABLE_GNSS
 HardwareSerial GNSS(2);
 #endif
@@ -360,6 +373,7 @@ static inline void wdt_kick() {
   delayMicroseconds(2);                  // WDI pulse >= 100 ns
   digitalWrite(PIN_WDT_WDI, LOW);
 }
+static void wdt_kick_ext() { wdt_kick(); }   // used by airone_storage.h long scans
 
 // Delay that keeps the external watchdog fed (for long setup waits).
 static void wdt_safe_delay(uint32_t ms) {
@@ -404,11 +418,20 @@ static bool i2c_ready(uint8_t ch, uint8_t addr) {
 class JsonPayload {
  public:
   JsonPayload() { reset(); }
-  void reset() { len_ = 0; buf_[len_++] = '{'; first_ = true; closed_ = false; dropped_ = 0; }
+  void reset() {
+    len_ = 0; buf_[len_++] = '{'; first_ = true; closed_ = false; dropped_ = 0;
+    ac_reset(&compact);
+  }
 
   // Numeric field. Non-finite values are omitted (would be invalid JSON).
+  // Every field that exists in the compact schema is mirrored into `compact`
+  // so the radio packet carries exactly the same measurements as the log.
   void add(const char* field, double value, const char* unit, const char* sid, int digits = 7) {
     if (!isfinite(value)) return;
+    ac_set(&compact, ac_field_index(field), value);
+    if (strcmp(sid, "BME688") == 0 && (strcmp(field, "altitude_rel") == 0 ||
+                                       strcmp(field, "vertical_speed") == 0))
+      compact.flags |= AC_FLAG_ALT_BME688;
     char tmp[160];
     int n = snprintf(tmp, sizeof(tmp),
                      "\"%s\":{\"value\":%.*g,\"unit\":\"%s\",\"sensor_id\":\"%s\"}",
@@ -431,6 +454,7 @@ class JsonPayload {
   }
   size_t size() const { return len_; }
   unsigned dropped() const { return dropped_; }
+  AcEncoder compact;
 
  private:
   void append(const char* s, int n) {
@@ -509,6 +533,9 @@ static void set_state(MissionState s) {
   if (s == ST_ASCENT) g_seen_positive_vz = false;
   if (s == ST_DESCENT) { g_land_anchor_alt = NAN; g_land_anchor_ms = 0; }
   fram_save(true);   // store state on every transition
+#if ENABLE_STORAGE
+  storage_request_sync();   // make everything up to the transition durable on SD
+#endif
 }
 
 static inline uint32_t in_state_ms() { return millis() - g_state_entered_ms; }
@@ -883,48 +910,6 @@ static long read_geiger_cpm() {
 #endif
 
 // =====================================================================
-// E22 LoRa helpers
-// =====================================================================
-static bool e22_wait_aux(uint32_t timeout_ms) {
-  uint32_t t0 = millis();
-  while (digitalRead(E22_AUX_PIN) == LOW) {
-    if (millis() - t0 > timeout_ms) return false;
-    delay(1);
-  }
-  return true;
-}
-
-#if E22_AUTOCONFIG
-// Volatile configuration (C2 = set registers, not saved). Config mode on the
-// E22 is M0=0, M1=1 and always talks 9600 8N1.
-static void e22_autoconfig() {
-  digitalWrite(E22_M0_PIN, LOW);
-  digitalWrite(E22_M1_PIN, HIGH);
-  wdt_safe_delay(50);
-  e22_wait_aux(500);
-  E22.begin(9600, SERIAL_8N1, E22_RX_PIN, E22_TX_PIN);
-  const uint8_t cmd[] = {
-    0xC2, 0x00, 0x07,
-    0x00, 0x00,          // ADDH, ADDL
-    0x00,                // NETID
-    0xE7,                // REG0: UART 115200 (111), 8N1 (00), air 62.5k (111)
-    0x00,                // REG1: 240-byte sub-packet, RSSI noise off, 30 dBm
-    E22_CHANNEL,         // REG2: channel -> 410 + CH MHz
-    0x00                 // REG3: transparent, no RSSI byte, no LBT
-  };
-  E22.write(cmd, sizeof(cmd));
-  E22.flush();
-  uint8_t resp[10]; size_t n = 0; uint32_t t0 = millis();
-  while (n < sizeof(resp) && millis() - t0 < 300) { if (E22.available()) resp[n++] = E22.read(); }
-  Serial.printf("E22 autoconfig: %s\n", (n >= 3 && resp[0] == 0xC1) ? "OK" : "NO RESPONSE");
-  E22.end();
-  digitalWrite(E22_M1_PIN, LOW);         // back to transparent (M0=M1=0)
-  wdt_safe_delay(50);
-  e22_wait_aux(500);
-}
-#endif
-
-// =====================================================================
 // Sensor health bitmask (transmitted as sensor_health_mask)
 // =====================================================================
 enum {
@@ -947,11 +932,14 @@ void setup() {
   pinMode(PIN_BMI270_CS, OUTPUT); digitalWrite(PIN_BMI270_CS, HIGH);
   pinMode(PIN_FLASH_CS, OUTPUT);  digitalWrite(PIN_FLASH_CS, HIGH);
   pinMode(PIN_SD_CS, OUTPUT);     digitalWrite(PIN_SD_CS, HIGH);
+  pinMode(RADIO_PIN_NSS, OUTPUT); digitalWrite(RADIO_PIN_NSS, HIGH);
+  // E22 RF switch off (neither PA nor LNA) until RadioLib takes over.
+  pinMode(RADIO_PIN_RXEN, OUTPUT); digitalWrite(RADIO_PIN_RXEN, LOW);
+  pinMode(RADIO_PIN_TXEN, OUTPUT); digitalWrite(RADIO_PIN_TXEN, LOW);
 
-  // ---- E22 into transparent mode (M0 = M1 = LOW) --------------------------
-  pinMode(E22_M0_PIN, OUTPUT); digitalWrite(E22_M0_PIN, LOW);
-  pinMode(E22_M1_PIN, OUTPUT); digitalWrite(E22_M1_PIN, LOW);
-  pinMode(E22_AUX_PIN, INPUT);
+  // ---- Power-gated rails ON (TPS22919 load switches) ---------------------
+  if (PIN_EN_GNSS >= 0) { pinMode(PIN_EN_GNSS, OUTPUT); digitalWrite(PIN_EN_GNSS, HIGH); }
+  // (radio boost enable, if wired, is RADIO_PIN_PWR_EN -- handled in radio_begin)
 
   Serial.begin(115200);
   wdt_safe_delay(200);
@@ -960,12 +948,13 @@ void setup() {
   Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL);
   Wire.setClock(400000);
   SPI.begin(PIN_SPI_SCK, PIN_SPI_MISO, PIN_SPI_MOSI);
+  spi_bus_init();   // shared-bus mutex: BMI270, SX1268, MicroSD, W25Q128
 
-#if E22_AUTOCONFIG
-  e22_autoconfig();
+#if ENABLE_RADIO
+  g_radio_wait_hook = wdt_kick_ext;   // keep TPS3823 alive during RadioLib waits
+  radio_begin(false);
+  wdt_kick();
 #endif
-  E22.setTxBufferSize(JSON_BUF_SIZE + 256);   // whole frame queues without blocking
-  E22.begin(E22_BAUD, SERIAL_8N1, E22_RX_PIN, E22_TX_PIN);
 
   g_link_key_len = airone_hex_to_key(AIRONE_LINK_KEY_HEX, g_link_key, sizeof(g_link_key));
   if (g_link_key_len == 0) {
@@ -1083,9 +1072,13 @@ void setup() {
 #if ENABLE_BMI270
   // bmi270_init uploads an 8 kB config blob; 1 MHz keeps that well under the
   // watchdog window (BMI270 supports up to 10 MHz).
-  imu_ok = (imu.beginSPI(PIN_BMI270_CS, 1000000) == BMI2_OK);
+  {
+    SpiLock lk(2000);
+    imu_ok = lk.ok() && (imu.beginSPI(PIN_BMI270_CS, 1000000) == BMI2_OK);
+  }
   wdt_kick();
   if (imu_ok) {
+    SpiLock lk(2000);
     bmi2_sens_config acc;  acc.type = BMI2_ACCEL;
     bmi2_sens_config gyr;  gyr.type = BMI2_GYRO;
     if (imu.getConfig(&acc) == BMI2_OK) {
@@ -1123,7 +1116,13 @@ void setup() {
   }
   fram_save(true);
 
-  Serial.println(F("Setup complete. Serial commands: 'R' = clear FRAM mission record, 'S' = status"));
+  // ---- On-board logging (starts the storage task on core 0) -----------------
+#if ENABLE_STORAGE
+  storage_begin(PIN_SD_CS, PIN_FLASH_CS);
+#endif
+
+  Serial.println(F("Setup complete. Serial commands: 'R' = clear FRAM mission record, 'S' = status,"));
+  Serial.println(F("  'L' = log/radio status, 'D' = dump flash log, 'E' twice = erase flash log"));
   wdt_kick();
 }
 
@@ -1152,6 +1151,27 @@ static void handle_serial_commands() {
                     g_baseline_valid && isfinite(g_alt_f) ? g_alt_f - g_baseline_alt : NAN,
                     g_vz, (int)g_resumed);
     }
+#if ENABLE_STORAGE
+    else if (c == 'L' || c == 'l') {
+      storage_print_status();
+#if ENABLE_RADIO
+      radio_print_status();
+#endif
+    } else if (c == 'D' || c == 'd') {
+      storage_dump_flash();
+    } else if (c == 'E' || c == 'e') {
+      // Destructive: require a second 'E' within 3 s.
+      static uint32_t armed_ms = 0;
+      if (armed_ms && millis() - armed_ms < 3000) {
+        armed_ms = 0;
+        storage_request_flash_erase();
+        Serial.println(F("[STORAGE] flash log erase requested"));
+      } else {
+        armed_ms = millis() | 1u;
+        Serial.println(F("[STORAGE] press 'E' again within 3 s to ERASE the flash log"));
+      }
+    }
+#endif
   }
 }
 
@@ -1164,6 +1184,10 @@ void loop() {
   while (GNSS.available()) gps.encode(GNSS.read());
 #endif
   handle_serial_commands();
+#if ENABLE_RADIO
+  radio_poll();     // completes a LoRa packet in flight (non-blocking)
+  radio_maintain(false);   // re-tries a failed init every RADIO_RETRY_MS
+#endif
 
   uint32_t now = millis();
   if (now - last_tx < TELEMETRY_PERIOD_MS) return;
@@ -1287,7 +1311,9 @@ void loop() {
 
   // ---- SPI: BMI270 ---------------------------------------------------------
 #if ENABLE_BMI270
-  if (imu_ok && imu.getSensorData() == BMI2_OK) {
+  bool imu_read = false;
+  if (imu_ok) { SpiLock lk(50); imu_read = lk.ok() && imu.getSensorData() == BMI2_OK; }
+  if (imu_read) {
     const float G = 9.80665f;
     float ax = imu.data.accelX * G, ay = imu.data.accelY * G, az = imu.data.accelZ * G;
     p.add("imu_accel_x", ax, "m/s^2", "BMI270");
@@ -1318,6 +1344,10 @@ void loop() {
   }
   if (gps.altitude.isValid() && gps.altitude.age() < 2000)
     p.add("gnss_altitude", gps.altitude.meters(), "m", "MAX-M10S");
+  if (gps.satellites.isValid() && gps.satellites.age() < 2000)
+    p.add("gnss_satellites", gps.satellites.value(), "count", "MAX-M10S");
+  if (gps.hdop.isValid() && gps.hdop.age() < 2000)
+    p.add("gnss_hdop", gps.hdop.hdop(), "hdop", "MAX-M10S");
 #endif
 
   // ---- Mission state machine ----------------------------------------------
@@ -1334,14 +1364,26 @@ void loop() {
   if (p.dropped()) Serial.printf("WARN: %u field(s) did not fit the JSON buffer\n", p.dropped());
   const uint8_t* payload = p.bytes();
   size_t plen = p.size();
-  size_t flen = airone_pack_frame_auth(frame, sizeof(frame),
-                                       AIRONE_PT_SENSOR_DATA, g_sequence,
-                                       epoch_micros(), payload, plen,
-                                       g_link_key_len ? g_link_key : NULL,
-                                       g_link_key_len);
+  uint64_t ts_us = epoch_micros();
+  const uint8_t* key = g_link_key_len ? g_link_key : NULL;
+  size_t flen = airone_pack_frame_auth(frame, sizeof(frame), AIRONE_PT_SENSOR_DATA,
+                                       g_sequence, ts_us, payload, plen, key, g_link_key_len);
   if (flen > 0) {
-    if (!e22_wait_aux(100)) Serial.println(F("WARN: E22 AUX busy (air rate too low for frame rate?)"));
-    E22.write(frame, flen);
+    // 1) Full JSON frame -> on-board log (MicroSD, W25Q128 on failover).
+#if ENABLE_STORAGE
+    if (!storage_log(frame, flen)) Serial.println(F("WARN: log ring full, frame not logged"));
+#endif
+    // 2) Same measurements, compact binary, same SEQUENCE/TIMESTAMP -> LoRa.
+    //    The ground bridge expands it back into the identical JSON layout.
+#if ENABLE_RADIO
+    static uint8_t cpay[AC_MAX_PAYLOAD];
+    static uint8_t rframe[RADIO_MAX_PACKET];
+    size_t clen = ac_encode(&p.compact, cpay, sizeof(cpay));
+    size_t rlen = clen ? airone_pack_frame_auth(rframe, sizeof(rframe), AIRONE_PT_COMPACT,
+                                                g_sequence, ts_us, cpay, clen, key, g_link_key_len)
+                       : 0;
+    if (rlen > 0) radio_send(rframe, rlen);   // skipped if duty cycle not yet allowed
+#endif
     g_sequence++;
   } else {
     Serial.println(F("Frame too large or auth refused; dropped (never truncated)."));

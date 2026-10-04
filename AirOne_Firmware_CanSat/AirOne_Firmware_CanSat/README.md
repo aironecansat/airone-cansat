@@ -5,11 +5,13 @@ This folder holds the firmware that runs inside the CanSat. The laptop ground-st
 | | |
 |---|---|
 | Board | ESP32-WROVER-E-N16R8 (Arduino board **ESP32 Wrover Module**) |
-| Build | ✅ Compiles on esp32 core 2.0.17: **391,802 B flash (29 %)**, **33,024 B static RAM (10 %)** |
-| Hardware test | ❌ Not yet run on the flight board — bench-test every sensor first |
-| Telemetry | 2 Hz binary frames, CRC-32, optional HMAC-SHA256 tag, JSON payload |
+| Build | ✅ Compiles (`esp32:esp32:esp32wrover`): flight **474,729 B flash (36 %)**, **39,696 B static RAM (12 %)**; ground bridge 333,387 B (25 %) |
+| Host tests | ✅ `tests/run_host_tests.sh` (compact payload round trip, frame parser/HMAC, flash-log recovery, duty-cycle maths) |
+| Hardware test | ❌ Not yet run on the flight board — bench-test every sensor, the radio and both log media first |
+| Logging | Full JSON frame every 500 ms → MicroSD, automatic failover to the W25Q128 flash |
+| Telemetry | E22-400M30S (SX1268) over **SPI** via RadioLib; compact binary frame (≤199 B) expanded to the normal JSON frame by the ground bridge |
 
-> ⚠️ **Radio:** the code drives a **UART** E22 (transparent mode, M0/M1/AUX). The parts list's **E22-400M30S is an SPI (SX1268) module** and will not work with this driver. Use an E22-400T30S/D, or replace the radio code with an SX1268 driver (for example RadioLib). See the repository README, section 1.
+> ⚠️ **Radio pins are an assumption.** The E22 control pins (NSS 13, RXEN 14, TXEN 33, BUSY 27, DIO1 35, NRST not connected) re-use the pads of the old UART E22 header plus the V7.1 TXEN/BUSY assignment. The V7.1 map put RXEN on GPIO32 (now the TPS3823 WDI) and NRST/DIO1 on GPIO16/17 (PSRAM on WROVER), so it could not be used as-is. **Check against the PCB** and override with `-DRADIO_PIN_xxx=n` if different.
 
 ---
 
@@ -18,7 +20,14 @@ This folder holds the firmware that runs inside the CanSat. The laptop ground-st
 | File | Contents |
 |---|---|
 | `airone_cansat/airone_cansat.ino` | Pin map, sensor drivers, altitude filter, state machine, FRAM persistence, timekeeping, Geiger ISR, telemetry loop |
-| `airone_cansat/airone_frame.h` | Frame packer, CRC-32, portable SHA-256 and HMAC-SHA256 (no mbedtls), hex key parser. Also compiles on a PC for the parity test against Python |
+| `airone_cansat/airone_frame.h` | Frame packer and parser, CRC-32, portable SHA-256 and HMAC-SHA256 (no mbedtls), hex key parser. Also compiles on a PC |
+| `airone_cansat/airone_radio.h` | SX1268 driver wrapper (RadioLib): pins, link parameters, non-blocking TX, duty-cycle limiter |
+| `airone_cansat/airone_compact.h` | Compact radio payload (PACKET_TYPE 0x10) encoder and JSON expander |
+| `airone_cansat/airone_storage.h` | MicroSD + W25Q128 logging task (core 0), RAM ring buffer, failover/re-mount |
+| `airone_cansat/airone_flashlog.h` | Flash-log end-of-log recovery after power loss |
+| `airone_cansat/airone_spibus.h` | Shared SPI bus mutex (BMI270, SX1268, SD, flash) |
+| `airone_ground_bridge/` | Ground ESP32 + E22-400M30S: receives compact frames and outputs standard AirOne frames on USB (115200) for the laptop software |
+| `tests/` | Host unit tests (`run_host_tests.sh`) |
 | `docs/hardware_connection.md` | Wiring, E22 configuration, troubleshooting |
 | `docs/telemetry_protocol.md` | Frame specification |
 | `docs/security_model.md` | Link authentication design |
@@ -44,6 +53,7 @@ This folder holds the firmware that runs inside the CanSat. The laptop ground-st
 | Adafruit FRAM I2C | MB85RC512 (via `Adafruit_EEPROM_I2C`) | I²C |
 | SparkFun BMI270 Arduino Library | BMI270 | SPI |
 | TinyGPSPlus | MAX-M10S | UART2 |
+| RadioLib (7.x, tested 7.8.1) | E22-400M30S / SX1268 | SPI |
 
 Dependencies: Adafruit BusIO, Adafruit Unified Sensor, Sensirion Core.
 
@@ -70,11 +80,15 @@ arduino-cli compile -b esp32:esp32:esp32wrover \
 | Option | Default | Effect |
 |---|---|---|
 | `ENABLE_BME688` … `ENABLE_I2C_MUX` | 1 | Set to 0 to remove a device; its fields are then never sent |
-| `E22_AUTOCONFIG` | 0 | 1 = program the CanSat E22 at boot (115200 UART, 62.5 kbps air rate, channel 23, 30 dBm, transparent) with the volatile `C2` command |
+| `ENABLE_STORAGE` / `ENABLE_RADIO` | 1 | Set to 0 to disable SD/flash logging or the LoRa downlink |
+| `RADIO_PIN_NSS/BUSY/DIO1/NRST/RXEN/TXEN` | 13/27/35/-1/14/33 | E22 control pins (see warning above) |
+| `RADIO_FREQ_MHZ`, `RADIO_BW_KHZ`, `RADIO_SF`, `RADIO_CR`, `RADIO_SYNC` | 433.92, 250, 7, 5, 0x12 | LoRa link parameters — **must match the ground bridge** |
+| `RADIO_SX_POWER_DBM` | -9 | SX1268 core power. The E22's PA adds gain on top; measure before raising (10 mW e.r.p. limit) |
+| `RADIO_DUTY_PCT` | 10 | Transmitter on-time limit. Frames that would exceed it are not sent by radio (still logged) |
+| `RADIO_TCXO_V` | 1.8 | TCXO supply on DIO3 |
 | `AIRONE_LINK_KEY_HEX` | `""` | Hex key, at least 32 hex characters. Empty = unauthenticated frames. Too short = no frames are sent |
-| `TELEMETRY_PERIOD_MS` | 500 | Frame period. Use 1000 if the radio reports AUX busy |
+| `TELEMETRY_PERIOD_MS` | 500 | Sensor/log frame period |
 | `JSON_BUF_SIZE` | 3072 | Payload buffer (a full payload is ≈2,534 B) |
-| `E22_CHANNEL` | 23 | 410 + channel MHz (23 → 433 MHz) |
 
 ### Serial commands
 
@@ -82,6 +96,9 @@ arduino-cli compile -b esp32:esp32:esp32wrover \
 |---|---|
 | `S` | Print state, sequence, health mask, relative altitude, vertical speed, resumed flag |
 | `R` | Clear the FRAM mission record, reset the sequence and restart SELF_TEST (do this before each flight) |
+| `L` | Log and radio status (SD/flash state, frames written, drops, failovers, radio TX/skip/error counts) |
+| `D` | Dump the flash log over serial (`AIRONE_FLASH_DUMP <n>` … `AIRONE_FLASH_DUMP_END <crc>`) |
+| `E` `E` | Erase the flash log (second `E` within 3 s) |
 
 ---
 
@@ -92,9 +109,9 @@ arduino-cli compile -b esp32:esp32:esp32wrover \
 | I²C SDA / SCL | 21 / 22 | 400 kHz, behind a PCA9548A at 0x70 |
 | SPI SCK / MISO / MOSI | 18 / 19 / 23 | Shared |
 | BMI270 CS | 15 | |
-| MicroSD CS / W25Q128 CS | 5 / 4 | Held HIGH (not used yet) |
-| E22 UART1 RX / TX | 16 / 17 | ⚠️ PSRAM pins on WROVER — check the PCB |
-| E22 M0 / M1 / AUX | 13 / 14 / 35 | AUX is input-only, HIGH = idle |
+| MicroSD CS / W25Q128 CS | 5 / 4 | Logging (shared SPI) |
+| E22 NSS / BUSY / DIO1 | 13 / 27 / 35 | SPI CS, SX1268 busy, TX-done IRQ (⚠️ assumed — check PCB) |
+| E22 RXEN / TXEN / NRST | 14 / 33 / — | RF switch; NRST not connected by default (⚠️ assumed) |
 | GNSS UART2 RX / TX | 25 / 26 | 9600 baud |
 | Geiger pulse | 39 | Input-only, needs an external pull-up, falling edge |
 | TPS3823 WDI | 32 | Watchdog timeout ≈1.6 s |
@@ -207,10 +224,10 @@ Size with all 38 fields: **≈2,534 B payload, ≈2,560 B frame** (+8 B with the
 
 ## Efficiency notes
 
-- Frame and JSON buffers are static (not on the 8 KB loop stack). The UART TX buffer holds a whole frame, so sending does not block the loop.
+- Frame and JSON buffers are static (not on the 8 KB loop stack). Radio TX is interrupt-driven (DIO1) and SD/flash writes run in a separate task, so neither blocks the sensor loop.
 - GNSS is parsed on every loop pass. Sensors are read one mux channel at a time, and the mux channel is cached.
 - SGP41 runs at 1 Hz (its specified rate), so it heats half as often.
-- **Radio is the bottleneck:** a full frame takes ≈0.22 s on the 115200 UART and ≥0.33 s on air at 62.5 kbps, so the transmitter is on **≥65 %** of the time at 2 Hz. The JSON payload is about 17× larger than an equivalent binary payload (~150 B). Use 1 Hz, a smaller field set, or a binary packet type to cut air time, power and duty cycle.
+- **Radio:** the radio sends a compact binary frame (all 39 fields + HMAC = 199 B instead of ≈2.6 kB). At SF7 / 250 kHz that is roughly 160 ms on air (estimate — `L` prints the real counts), so with the 10 % duty-cycle limit about one frame every ~1.6 s goes out by radio. Every 500 ms frame is still logged on board.
 - Wi-Fi/BT are never started. `setCpuFrequencyMhz(80)` would cut ESP32 current further; the loop needs very little CPU.
 - FRAM endurance (~10¹³ writes) is enough for a write every 500 ms for far longer than the mission.
 
@@ -218,11 +235,14 @@ Size with all 38 fields: **≈2,534 B payload, ≈2,560 B frame** (+8 B with the
 
 ## Hardware checks (cannot be fixed in firmware)
 
-- **E22 type:** UART (E22-xxxT) vs. SPI (E22-400M30S) — see the top of this file.
-- **GPIO16/17** are PSRAM pins on WROVER-E modules — confirm the radio really connects there.
-- **GPIO35 / GPIO39** are input-only with no internal pull-ups — the board must provide them.
+- **E22 control pins** — confirm NSS/BUSY/DIO1/RXEN/TXEN/NRST against the schematic (see the top of this file). GPIO16/17 are PSRAM pins on WROVER-E and are not used.
+- **GPIO39** is input-only with no internal pull-up — the board must provide it. GPIO35 (DIO1) is driven push-pull by the SX1268, so it needs none.
 - **GPIO39 erratum:** spurious edges are possible while ADC1/Wi-Fi are active. Neither is used here, and the ISR has a dead-time filter.
 - **INA219 shunt:** calibration assumes 0.1 Ω.
 - **UK radio rules:** 433 MHz licence-exempt use is generally limited to 10 mW e.r.p. and a 10 % duty cycle. Confirm the allowed limits with the organisers (repository README, section 10).
 
-See [`docs/hardware_connection.md`](docs/hardware_connection.md) for E22 setup and troubleshooting.
+See [`docs/hardware_connection.md`](docs/hardware_connection.md) for wiring and troubleshooting.
+
+### Ground bridge
+
+Second ESP32 + E22-400M30S at the ground station. Build `airone_ground_bridge/` with the same RadioLib parameters (and the same `AIRONE_LINK_KEY_HEX`), plug it into the laptop and point the ground software at its USB port at 115200 baud. It outputs ordinary SENSOR_DATA frames with the CanSat's sequence and timestamp, plus `radio_rssi` and `radio_snr`. The shared headers must be identical in both sketches — `tests/run_host_tests.sh` checks this.

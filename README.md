@@ -51,12 +51,12 @@ AirOne is divided into two main software systems:
                     │                          │
                     │  BME688                  │
                     │  BMP581                  │
-                    │  VEML6075                │
-                    │  TSL2591                 │
-                    │  MMC5603                 │
-                    │  BMI270                  │
-                    │  MAX-M10S                │
-                    │  SEN0463                 │
+                    │  SGP41 / ENS160          │
+                    │  VEML6075 / OPT3001      │
+                    │  MMC5603 / BMI270        │
+                    │  MAX-M10S GNSS           │
+                    │  SEN0463 Geiger          │
+                    │  INA219 / DS3231         │
                     └────────────┬────────────┘
                                  │
                                  ▼
@@ -102,12 +102,18 @@ AirOne integrates multiple sensors for atmospheric, environmental, navigation, m
 |---|---|
 | BME688 | Temperature, humidity, pressure and gas/VOC information |
 | BMP581 | High-resolution atmospheric pressure / altitude reconstruction |
+| SGP41 | VOC / NOx index |
+| ENS160 | TVOC, eCO₂ and air-quality index |
 | VEML6075 | UVA / UVB |
-| TSL2591 | Ambient light |
+| OPT3001 | Ambient light |
 | MMC5603 | Magnetic field |
-| BMI270 | Acceleration and inertial measurements |
+| BMI270 | Acceleration and rotation (spin) |
 | MAX-M10S | GNSS position and timing |
-| SEN0463 | Ionising radiation |
+| SEN0463 | Ionising radiation (Geiger counter) |
+| INA219 | Battery voltage and current |
+| DS3231 | Real-time clock (timestamp backup) |
+
+All I²C sensors are connected through a PCA9548A I²C multiplexer. Full pin map: [`AirOne_Firmware_CanSat/AirOne_Firmware_CanSat/README.md`](AirOne_Firmware_CanSat/AirOne_Firmware_CanSat/README.md).
 
 The pressure sensors are particularly important for **altitude reconstruction**, allowing the flight profile to be analysed even when GNSS altitude data is unavailable or unreliable.
 
@@ -175,9 +181,9 @@ Used for full-flight telemetry logging.
 
 ### Backup storage
 
-**MB85RC256 FRAM**
+**MB85RC512 FRAM**
 
-Used for critical information and recent telemetry when required.
+Stores the packet sequence number and mission state so the CanSat resumes correctly after a brownout or reset.
 
 This provides a second storage path in case the primary storage system becomes unavailable.
 
@@ -193,22 +199,22 @@ The onboard software is organised around a deterministic flight state machine.
 BOOT
   │
   ▼
-SELF TEST
+SELF_TEST
   │
   ▼
-READY
+PRELAUNCH
   │
   ▼
-FLIGHT
+ASCENT
+  │
+  ▼
+APOGEE
   │
   ▼
 DESCENT
   │
   ▼
 LANDED
-  │
-  ▼
-RECOVERY
 ```
 
 Each state has a defined purpose and allows the system to respond appropriately to the current phase of the mission.
@@ -251,6 +257,14 @@ This allows the mission data to be analysed as a complete flight profile rather 
 
 ---
 
+## Secondary Mission — AirChem-Rad
+
+AirChem-Rad uses the sensors already on board to build one time-aligned **vertical profile** of air chemistry (BME688, SGP41, ENS160), UV light (VEML6075, OPT3001) and ionising radiation (SEN0463) during ascent and descent, plus descent spin dynamics from the BMI270 and MMC5603. On the ground the data is used to test whether the boundary layer is chemically different from the air above it and whether UV and radiation follow their expected altitude trends.
+
+Full mission plan: [`SECONDARY_MISSION.md`](SECONDARY_MISSION.md) (also as PDF / DOCX).
+
+---
+
 ## Ground Station
 
 The ground station runs on a laptop or desktop computer and provides the interface between the CanSat and the operator.
@@ -276,14 +290,21 @@ The ground station receives the radio telemetry through the ground LoRa module a
 ```text
 airone-cansat/
 │
-├── AirOne_V7.1_Firmware_CanSat/
-│   └── AirOne_V7.1_Firmware_CanSat/
-│       └── Flight firmware
+├── AirOne_Firmware_CanSat/
+│   └── AirOne_Firmware_CanSat/
+│       ├── airone_cansat/          ESP32 flight firmware (Arduino sketch)
+│       ├── docs/                   Wiring, protocol and security docs
+│       └── README.md               Firmware build + pin map
 │
-├── AirOne_V7.1_Software_Laptop/
-│   └── AirOne_V7.1_Software_Laptop/
-│       └── Ground station software
+├── AirOne_Software_Laptop/
+│   └── AirOne_Software_Laptop/
+│       ├── src/                    Ground station (pipeline, API, GUI, science, ML)
+│       ├── tests/                  Test suite (pytest)
+│       ├── docs/                   Operator / engineering manuals
+│       ├── requirements.txt
+│       └── README.md               Ground station setup
 │
+├── SECONDARY_MISSION.md            Secondary mission (AirChem-Rad)
 └── README.md
 ```
 
@@ -305,10 +326,12 @@ cd airone-cansat
 Navigate to:
 
 ```text
-AirOne_V7.1_Firmware_CanSat/
+AirOne_Firmware_CanSat/AirOne_Firmware_CanSat/airone_cansat/
 ```
 
-The firmware is intended to be compiled and uploaded to the onboard ESP32 flight computer.
+Open `airone_cansat.ino` in the Arduino IDE, select **ESP32 Wrover Module**, install the libraries listed in the firmware README, then compile and upload.
+
+> The firmware has not yet been compiled or flown on the real hardware — bench-test every sensor before flight.
 
 Before flight, verify:
 
@@ -326,10 +349,19 @@ Before flight, verify:
 Navigate to:
 
 ```text
-AirOne_V7.1_Software_Laptop/
+AirOne_Software_Laptop/AirOne_Software_Laptop/
 ```
 
-Install the required Python dependencies before running the ground-station software.
+```bash
+cd AirOne_Software_Laptop/AirOne_Software_Laptop
+pip install -r requirements.txt
+cp .env.example .env               # then set AIRONE_JWT_SECRET
+python launcher.py --validate-only # check the installation
+python launcher.py --simulate --gui   # simulated flight with the GUI
+python -m pytest -q                # run the test suite
+```
+
+To use the real LoRa receiver: `python launcher.py --serial-port /dev/ttyUSB0 --baud 115200 --force-baud` (see the ground station README).
 
 The ground station should be configured for the serial port associated with the connected LoRa receiver.
 
@@ -485,7 +517,7 @@ The repository contains the software required for the onboard and ground portion
 
 ## License
 
-See the repository for the applicable license and project terms.
+See the `LICENSE` file in each project folder.
 
 ---
 

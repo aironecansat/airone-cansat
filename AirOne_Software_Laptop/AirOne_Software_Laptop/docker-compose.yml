@@ -1,0 +1,48 @@
+# AirOne — headless ground station.
+# Secrets come ONLY from the environment / an .env file (git-ignored).
+# Bootstrap the first admin once:
+#   docker compose run --rm -e AIRONE_ADMIN_PASSWORD='...' airone python3 launcher.py --create-admin
+services:
+  airone:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: airone
+    # Published on loopback only: the API speaks plain HTTP. Change to
+    # "5000:5000" only behind a TLS reverse proxy.
+    ports:
+      - "127.0.0.1:5000:5000"
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./models:/app/models
+    env_file:
+      - .env
+    environment:
+      # Fails fast if the secret is missing instead of falling back to a
+      # well-known value.
+      AIRONE_JWT_SECRET: ${AIRONE_JWT_SECRET:?AIRONE_JWT_SECRET must be set (>= 32 chars)}
+      AIRONE_LINK_KEY: ${AIRONE_LINK_KEY:-}
+      AIRONE_API_HOST: 0.0.0.0
+      AIRONE_ALLOW_DEFAULT_USERS: "0"
+      AIRONE_ALLOW_CORS_WILDCARD: "0"
+      QT_QPA_PLATFORM: offscreen
+      # Serial device passthrough (uncomment and adjust for your hardware)
+      # AIRONE_SERIAL_PORT: /dev/ttyUSB0
+    # devices:
+    #   - /dev/ttyUSB0:/dev/ttyUSB0
+    user: "10001:10001"
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:5000/api/v1/status', timeout=4).status == 200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s

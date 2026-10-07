@@ -35,3 +35,4 @@ data/last_shutdown_state.json
 
 # Abacus internal metadata (do not publish)
 .abacus.donotdelete
+data/.runtime_secrets.json

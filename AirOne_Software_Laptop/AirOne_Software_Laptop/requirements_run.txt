@@ -1,0 +1,5 @@
+# Minimal runtime requirements for run.py
+# Install with:  pip install -r requirements_run.txt
+pyserial>=3.5
+Flask>=3.0
+PyYAML>=6.0

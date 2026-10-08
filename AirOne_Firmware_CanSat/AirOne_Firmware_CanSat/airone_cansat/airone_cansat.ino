@@ -1369,7 +1369,8 @@ void loop() {
   size_t flen = airone_pack_frame_auth(frame, sizeof(frame), AIRONE_PT_SENSOR_DATA,
                                        g_sequence, ts_us, payload, plen, key, g_link_key_len);
   if (flen > 0) {
-    // 1) Full JSON frame -> on-board log (MicroSD, W25Q128 on failover).
+    // 1) Full JSON frame -> on-board log (MicroSD, W25Q128 on failover,
+    //    internal SPIFFS as last resort). Always logged, independent of radio.
 #if ENABLE_STORAGE
     if (!storage_log(frame, flen)) Serial.println(F("WARN: log ring full, frame not logged"));
 #endif

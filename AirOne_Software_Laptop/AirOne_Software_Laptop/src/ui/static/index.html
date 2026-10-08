@@ -1,97 +1,352 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>AirOne Ground Station</title>
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <style>
-  :root{--bg:#0d1117;--panel:#161b22;--border:#30363d;--text:#c9d1d9;--muted:#8b949e;--green:#3fb950;--red:#f85149;--amber:#d29922;--blue:#58a6ff;}
-  *{box-sizing:border-box;margin:0;padding:0;}
-  body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,sans-serif;font-size:14px;min-height:100vh;overflow:hidden;}
-  header{display:flex;align-items:center;gap:10px;padding:8px 16px;border-bottom:1px solid var(--border);background:var(--panel);flex-wrap:wrap;}
-  .title{font-size:15px;font-weight:700;color:var(--blue);flex:1;white-space:nowrap;}
-  .badge{padding:3px 10px;border-radius:12px;font-size:12px;font-weight:600;background:var(--border);color:var(--muted);white-space:nowrap;}
-  .badge.ok{background:#1a3a20;color:var(--green);}.badge.err{background:#3a1a1a;color:var(--red);}.badge.warn{background:#3a2a0a;color:var(--amber);}
-  #state-chip{padding:3px 14px;border-radius:20px;font-size:12px;font-weight:700;background:var(--border);color:var(--muted);letter-spacing:.04em;}
-  #state-chip.BOOT{background:#1a2a3a;color:#58a6ff;}#state-chip.ASCENT{background:#1a3a20;color:#3fb950;}
-  #state-chip.COAST{background:#2a3020;color:#b0d030;}#state-chip.DESCENT{background:#3a2a10;color:#e08010;}
-  #state-chip.LANDED{background:#3a1020;color:#f85149;}
-  main{display:grid;grid-template-columns:300px 1fr;grid-template-rows:auto 1fr 130px;gap:10px;padding:10px;height:calc(100vh - 46px);}
-  .panel{background:var(--panel);border:1px solid var(--border);border-radius:8px;overflow:hidden;display:flex;flex-direction:column;}
-  .ptitle{padding:7px 12px;font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);border-bottom:1px solid var(--border);flex-shrink:0;}
-  .pbody{padding:10px;overflow:auto;flex:1;}
-  .stat-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;}
-  .stat{background:var(--bg);border-radius:6px;padding:8px 10px;}
-  .slabel{font-size:11px;color:var(--muted);margin-bottom:3px;}
-  .sval{font-size:20px;font-weight:700;}.sval.g{color:var(--green);}.sval.b{color:var(--blue);}.sval.a{color:var(--amber);}.sval.r{color:var(--red);}
-  table{width:100%;border-collapse:collapse;font-size:13px;}
-  th{color:var(--muted);font-size:11px;text-transform:uppercase;padding:4px 6px;text-align:left;border-bottom:1px solid var(--border);}
-  tr:nth-child(even){background:rgba(255,255,255,.02);}
-  td{padding:4px 6px;}td.k{color:var(--muted);font-size:12px;}td.v{font-weight:600;}td.u{color:var(--muted);font-size:11px;}td.s{color:var(--muted);font-size:11px;}
-  #no-signal{color:var(--amber);font-style:italic;font-size:12px;}
-  #chart-panel{grid-column:2;grid-row:1/3;}
-  canvas{width:100%!important;}
-  #log-panel{grid-column:1/3;grid-row:3;}
-  #log-body{font-family:monospace;font-size:12px;overflow-y:auto;max-height:100%;padding:6px 10px;}
-  .ll{color:var(--muted);}.ll.new{color:var(--text);}
+  :root { --bg:#0d1117; --fg:#3fb950; --accent:#58a6ff; --red:#ff7b72; --amber:#e3b341; --border:#30363d; --dim:#8b949e; }
+  * { box-sizing: border-box; }
+  html, body { margin:0; background:var(--bg); color:var(--fg); font-family:'Courier New', Courier, monospace; font-size:14px; }
+  header { display:flex; flex-wrap:wrap; gap:16px; align-items:center; padding:8px 14px; border-bottom:1px solid var(--border); }
+  header .title { font-weight:bold; }
+  #hdr-dot { color:var(--dim); }
+  #hdr-dot.on { color:var(--fg); }
+  #hdr-mode { color:var(--accent); }
+  #hdr-sim { color:var(--amber); }
+  #hdr-status { margin-left:auto; color:var(--dim); }
+  #hdr-status.on { color:var(--fg); }
+  main { padding:12px 14px 40px; display:grid; gap:12px; grid-template-columns: minmax(320px, 1fr) minmax(320px, 1fr); }
+  .panel { border:1px solid var(--border); padding:10px 12px; border-radius:0; min-width:0; }
+  .panel h2 { margin:0 0 8px; font-size:13px; color:var(--accent); font-weight:normal; }
+  .full { grid-column: 1 / -1; }
+  pre { margin:0; white-space:pre-wrap; word-break:break-word; font-family:inherit; }
+  #splash { grid-column:1 / -1; padding:40px 12px; font-size:18px; }
+  .blink { animation: blink 1s steps(1) infinite; }
+  @keyframes blink { 50% { opacity:0; } }
+  #telemetry { display:none; }
+  #tele-head { color:var(--accent); margin-bottom:6px; }
+  #tele-lines { line-height:1.45; }
+  .src { color:var(--dim); }
+  #chart-wrap { position:relative; height:280px; }
+  input, select, button { font-family:inherit; font-size:13px; background:var(--bg); color:var(--fg); border:1px solid var(--border); padding:5px 8px; }
+  button { border-radius:3px; cursor:pointer; color:var(--accent); }
+  button:hover { border-color:var(--accent); }
+  button:disabled { opacity:.5; cursor:wait; }
+  .row { display:flex; gap:8px; align-items:center; }
+  #ai-input { flex:1; min-width:0; }
+  #ai-out, #twin-out { margin-top:8px; max-height:340px; overflow:auto; }
+  .err { color:var(--red); }
+  .risk { border:1px solid var(--border); border-left:3px solid currentColor; padding:6px 8px; margin:6px 0; border-radius:0; }
+  .risk.HIGH { color:var(--red); }
+  .risk.MEDIUM { color:var(--amber); }
+  .risk.LOW { color:var(--fg); }
+  .risk.UNKNOWN { color:var(--dim); }
+  .risk .body { color:#c9d1d9; }
+  #sim-picker { display:none; }
+  #log { position:fixed; left:0; right:0; bottom:0; padding:4px 14px; border-top:1px solid var(--border); background:var(--bg); color:var(--dim); font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  #conn-lost { display:none; color:var(--red); }
+  @media (max-width: 800px) { main { grid-template-columns: 1fr; } }
 </style>
 </head>
 <body>
 <header>
-  <span class="title">&#128752; AirOne CanSat Ground Station</span>
-  <span id="conn-badge" class="badge err">No signal</span>
-  <span id="port-badge" class="badge">&#8212;</span>
-  <span id="pkt-badge"  class="badge">0 pkts</span>
-  <span id="fl-badge"   class="badge">Flights: 0/10</span>
-  <span id="state-chip">IDLE</span>
+  <span class="title"><span id="hdr-dot">[●]</span> AIRONE GROUND STATION</span>
+  <span id="hdr-mode">[NORMAL]</span>
+  <span id="hdr-sim"></span>
+  <span id="conn-lost">&gt; CONNECTION LOST — RECONNECTING...</span>
+  <span id="hdr-status">[NO LINK]</span>
 </header>
+
 <main>
-  <div class="panel" style="grid-column:1;grid-row:1">
-    <div class="ptitle">Link Status</div>
-    <div class="pbody">
-      <div class="stat-grid">
-        <div class="stat"><div class="slabel">Packets Rx</div><div class="sval b" id="s-pkts">0</div></div>
-        <div class="stat"><div class="slabel">Last packet</div><div class="sval" id="s-age">&#8212;</div></div>
-        <div class="stat"><div class="slabel">Flights done</div><div class="sval g" id="s-fl">0</div></div>
-        <div class="stat"><div class="slabel">Sim mode</div><div class="sval a" id="s-sim">Locked</div></div>
-      </div>
+  <div class="panel full" id="sim-picker">
+    <h2>&gt; SIM // recorded flights</h2>
+    <div class="row">
+      <select id="sim-select"></select>
+      <button id="sim-load">LOAD</button>
+      <span id="sim-msg"></span>
     </div>
   </div>
-  <div class="panel" style="grid-column:1;grid-row:2">
-    <div class="ptitle">Sensor Readings</div>
-    <div class="pbody">
-      <p id="no-signal">Waiting for telemetry&hellip;</p>
-      <table id="sensor-tbl" style="display:none">
-        <thead><tr><th>Sensor</th><th>Value</th><th>Unit</th><th>Src</th></tr></thead>
-        <tbody id="sensor-body"></tbody>
-      </table>
+
+  <div id="splash" class="panel">
+    <pre>&gt; AIRONE GROUND STATION v2.0
+<span class="blink">&gt; WAITING FOR SIGNAL...</span></pre>
+  </div>
+
+  <div class="panel" id="telemetry">
+    <h2>&gt; TELEMETRY</h2>
+    <div id="tele-head"></div>
+    <pre id="tele-lines"></pre>
+  </div>
+
+  <div class="panel" id="chart-panel" style="display:none">
+    <h2>&gt; ALTITUDE vs SEQUENCE</h2>
+    <div id="chart-wrap"><canvas id="alt-chart"></canvas></div>
+    <pre id="chart-note" class="src"></pre>
+  </div>
+
+  <div class="panel">
+    <h2>&gt; AIRONE AI // local deepseek-r1:8b</h2>
+    <div class="row">
+      <input id="ai-input" placeholder="ask about the flight data..." autocomplete="off">
+      <button id="ai-btn">ASK</button>
     </div>
+    <div id="ai-out"></div>
   </div>
-  <div class="panel" id="chart-panel">
-    <div class="ptitle">Altitude (m AGL) vs Time</div>
-    <div class="pbody" style="position:relative"><canvas id="altChart"></canvas></div>
-  </div>
-  <div class="panel" id="log-panel">
-    <div class="ptitle">Event Log</div>
-    <div id="log-body"></div>
+
+  <div class="panel">
+    <h2>&gt; DIGITAL TWIN // risk analysis</h2>
+    <button id="twin-btn">[ANALYZE FLIGHT]</button>
+    <div id="twin-out"></div>
   </div>
 </main>
+
+<div id="log">&gt; </div>
+
 <script>
-const MAX_PTS=400;
-const chartData={labels:[],datasets:[{label:'Altitude (m)',data:[],borderColor:'#58a6ff',backgroundColor:'rgba(88,166,255,.07)',fill:true,tension:.3,pointRadius:0,borderWidth:1.5}]};
-const altChart=new Chart(document.getElementById('altChart'),{type:'line',data:chartData,options:{responsive:true,maintainAspectRatio:false,animation:false,plugins:{legend:{display:false}},scales:{x:{ticks:{color:'#8b949e',maxTicksLimit:8},grid:{color:'#21262d'}},y:{ticks:{color:'#8b949e'},grid:{color:'#21262d'},title:{display:true,text:'m AGL',color:'#8b949e'}}}}});
-function pushAlt(ts,alt){const label=new Date(ts*1000).toLocaleTimeString();chartData.labels.push(label);chartData.datasets[0].data.push(alt);if(chartData.labels.length>MAX_PTS){chartData.labels.shift();chartData.datasets[0].data.shift();}altChart.update('none');}
-const LABELS={temperature:'Temperature',pressure:'Pressure',humidity:'Humidity',altitude_rel:'Altitude (rel)',altitude_baro:'Altitude (baro)',accel_x:'Accel X',accel_y:'Accel Y',accel_z:'Accel Z',gyro_x:'Gyro X',gyro_y:'Gyro Y',gyro_z:'Gyro Z',mag_x:'Mag X',mag_y:'Mag Y',mag_z:'Mag Z',latitude:'Latitude',longitude:'Longitude',gps_altitude:'GPS Alt',battery_voltage:'Battery V',battery_current:'Battery I',battery_soc:'Battery %',mission_state:'Mission State',packet_sequence:'Sequence',uva:'UV-A',uvb:'UV-B',uv_index:'UV Index'};
-function renderSensors(fields){const keys=Object.keys(fields);if(!keys.length)return;document.getElementById('no-signal').style.display='none';const tbl=document.getElementById('sensor-tbl');tbl.style.display='table';const tbody=document.getElementById('sensor-body');const existing={};for(const row of tbody.rows)existing[row.dataset.key]=row;keys.forEach(key=>{const raw=fields[key];let val,unit='',src='';if(raw!==null&&typeof raw==='object'&&'value' in raw){val=raw.value;unit=raw.unit||'';src=raw.source||'';}else{val=raw;}if(typeof val==='number')val=val.toFixed(3);let row=existing[key];if(!row){row=tbody.insertRow();row.dataset.key=key;row.insertCell().className='k';row.insertCell().className='v';row.insertCell().className='u';row.insertCell().className='s';}row.cells[0].textContent=LABELS[key]||key;row.cells[1].textContent=val;row.cells[2].textContent=unit;row.cells[3].textContent=src;});}
-let lastTs=null,totalPkts=0;
-function updateHeader(connected,port,pkts,flights){const cb=document.getElementById('conn-badge');cb.textContent=connected?'LIVE':'No signal';cb.className='badge '+(connected?'ok':'err');document.getElementById('port-badge').textContent=port||'—';document.getElementById('pkt-badge').textContent=pkts+' pkts';const fb=document.getElementById('fl-badge');fb.textContent='Flights: '+flights+'/10';fb.className='badge'+(flights>=10?' ok':'');document.getElementById('s-pkts').textContent=pkts;document.getElementById('s-fl').textContent=flights;const u=flights>=10;document.getElementById('s-sim').textContent=u?'Unlocked':'Locked ('+flights+'/10)';document.getElementById('s-sim').className='sval '+(u?'g':'a');}
-function updateAge(){const el=document.getElementById('s-age');if(!lastTs){el.textContent='—';el.className='sval';return;}const age=((Date.now()/1000)-lastTs).toFixed(0);el.textContent=age+'s ago';el.className='sval '+(age<5?'g':age<15?'a':'r');}
-setInterval(updateAge,1000);
-function setStateChip(st){const chip=document.getElementById('state-chip');chip.textContent=st||'IDLE';const c=(st||'').toUpperCase();chip.className='';if(['BOOT','ASCENT','COAST','DESCENT','LANDED'].includes(c))chip.classList.add(c);}
-function appendLog(lines){const body=document.getElementById('log-body');(Array.isArray(lines)?lines:[lines]).forEach(line=>{const el=document.createElement('div');el.className='ll new';el.textContent=line;body.appendChild(el);setTimeout(()=>el.classList.remove('new'),2500);});while(body.children.length>120)body.removeChild(body.firstChild);body.scrollTop=body.scrollHeight;}
-function connect(){const es=new EventSource('/stream');es.onopen=()=>appendLog('[System] Stream connected');es.onerror=()=>{document.getElementById('conn-badge').textContent='Reconnecting…';document.getElementById('conn-badge').className='badge warn';};es.onmessage=e=>{let msg;try{msg=JSON.parse(e.data);}catch{return;}if(msg.type==='log'){appendLog(msg.line);return;}if(msg.type==='status'){updateHeader(msg.connected,msg.port,msg.packets_rx||0,msg.flights_completed||0);if(msg.log)appendLog(msg.log);return;}totalPkts=msg.packets_rx||totalPkts+1;lastTs=msg.ts;updateHeader(true,msg.port,totalPkts,msg.flights_completed||0);setStateChip(msg.mission_state);if(msg.fields){renderSensors(msg.fields);const af=msg.fields.altitude_rel||msg.fields.altitude_baro||msg.fields.gps_altitude;if(af!==undefined){const v=(af!==null&&typeof af==='object')?af.value:af;if(typeof v==='number')pushAlt(msg.ts,v);}}};}
-connect();
+(function () {
+  "use strict";
+  var $ = function (id) { return document.getElementById(id); };
+  var AI_ERR = "> ERROR: AI offline. Run: ollama serve && ollama pull deepseek-r1:8b";
+  var MAX_POINTS = 200;
+  // Field names checked (in order) for the altitude chart.
+  var ALT_KEYS = ["altitude_rel", "altitude", "baro_altitude", "gnss_altitude"];
+
+  var status = {};          // last `event: status` (mode/connection only)
+  var lastPacket = null;    // last real sensor dict
+  var lastMeta = null;      // {seq, packets_rx, rssi} for the last packet
+  var gotPacket = false;
+  var chart = null;
+  var lastSimId = null;
+
+  function esc(s) {
+    return String(s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+
+  // ---------------- header / status ----------------
+  function applyStatus(s) {
+    status = s || {};
+    var sim = status.mode === "sim";
+    $("hdr-mode").textContent = sim ? "[SIM]" : "[NORMAL]";
+    $("hdr-sim").textContent = sim && status.sim_flight_id != null ? "SIM: Flight #" + status.sim_flight_id : "";
+    var live = sim ? status.sim_flight_id != null : !!status.connected;
+    $("hdr-dot").className = live ? "on" : "";
+    var st = $("hdr-status");
+    st.className = live ? "on" : "";
+    st.textContent = sim ? (live ? "[REPLAY]" : "[NO FLIGHT LOADED]")
+                         : (status.connected ? "[LINK " + (status.port || "") + "]" : "[NO LINK]");
+    $("sim-picker").style.display = sim ? "block" : "none";
+    if (sim && !$("sim-select").options.length) loadFlights();
+    if (sim && status.sim_flight_id !== lastSimId) {
+      if (lastSimId !== null) resetDisplay();      // new flight loaded: clear old data
+      lastSimId = status.sim_flight_id;
+    }
+  }
+
+  function resetDisplay() {
+    gotPacket = false; lastPacket = null; lastMeta = null;
+    $("splash").style.display = "";
+    $("telemetry").style.display = "none";
+    $("chart-panel").style.display = "none";
+    if (chart) { chart.data.labels = []; chart.data.datasets[0].data = []; chart.update("none"); }
+  }
+
+  // ---------------- telemetry ----------------
+  function fieldParts(v) {
+    if (v !== null && typeof v === "object" && !Array.isArray(v)) {
+      return { value: v.value, unit: v.unit || "", src: v.sensor_id || "" };
+    }
+    return { value: v, unit: "", src: "" };
+  }
+
+  function fmt(v) {
+    if (typeof v === "number") return Number.isInteger(v) ? String(v) : v.toFixed(4).replace(/0+$/, "").replace(/\.$/, "");
+    if (v === null || v === undefined) return "null";
+    if (typeof v === "object") return JSON.stringify(v);
+    return String(v);
+  }
+
+  function renderPacket(p) {
+    var names = Object.keys(p);
+    var w = 0;
+    names.forEach(function (n) { if (n.length > w) w = n.length; });
+    var lines = names.map(function (n) {
+      var f = fieldParts(p[n]);
+      var pad = n + new Array(w - n.length + 1).join(" ");
+      return esc(pad) + " = " + esc(fmt(f.value)) + (f.unit ? " " + esc(f.unit) : "") +
+             (f.src ? ' <span class="src">[' + esc(f.src) + "]</span>" : "");
+    });
+    $("tele-lines").innerHTML = lines.join("\n");
+    var head = "packets=" + (lastMeta && lastMeta.packets_rx != null ? lastMeta.packets_rx : "?");
+    if (lastMeta && typeof lastMeta.rssi === "number") head += " rssi=" + lastMeta.rssi + " dBm";
+    else head += " rssi=n/a";
+    if (lastMeta && lastMeta.seq != null) head += " seq=" + lastMeta.seq;
+    $("tele-head").textContent = head;
+  }
+
+  function altitudeOf(p) {
+    for (var i = 0; i < ALT_KEYS.length; i++) {
+      if (Object.prototype.hasOwnProperty.call(p, ALT_KEYS[i])) {
+        var v = fieldParts(p[ALT_KEYS[i]]).value;
+        if (typeof v === "number" && isFinite(v)) return { key: ALT_KEYS[i], v: v };
+      }
+    }
+    return null;
+  }
+
+  function ensureChart() {
+    if (chart || typeof Chart === "undefined") return chart;
+    chart = new Chart($("alt-chart").getContext("2d"), {
+      type: "line",
+      data: { labels: [], datasets: [{ data: [], borderColor: "#3fb950", backgroundColor: "#3fb950",
+              borderWidth: 1.5, pointRadius: 0, tension: 0 }] },
+      options: {
+        animation: false, responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { display: false } },
+        scales: {
+          x: { title: { display: true, text: "sequence", color: "#8b949e" },
+               ticks: { color: "#8b949e", maxTicksLimit: 8 }, grid: { color: "#21262d" } },
+          y: { title: { display: true, text: "altitude (m)", color: "#8b949e" },
+               ticks: { color: "#8b949e" }, grid: { color: "#21262d" } }
+        }
+      }
+    });
+    return chart;
+  }
+
+  function addPoint(p) {
+    var a = altitudeOf(p);
+    if (!a) return;                          // no altitude in this packet: no point
+    var c = ensureChart();
+    $("chart-panel").style.display = "";
+    if (!c) { $("chart-note").textContent = "Chart.js could not be loaded (offline?)."; return; }
+    var x = lastMeta && lastMeta.seq != null ? lastMeta.seq : (lastMeta ? lastMeta.packets_rx : "");
+    c.data.labels.push(x);
+    c.data.datasets[0].data.push(a.v);
+    if (c.data.labels.length > MAX_POINTS) { c.data.labels.shift(); c.data.datasets[0].data.shift(); }
+    c.update("none");
+    $("chart-note").textContent = "source field: " + a.key;
+  }
+
+  function onPacket(p) {
+    if (!p || typeof p !== "object") return;
+    lastPacket = p;
+    if (!gotPacket) {
+      gotPacket = true;
+      $("splash").style.display = "none";
+      $("telemetry").style.display = "block";
+    }
+    renderPacket(p);
+    addPoint(p);
+  }
+
+  // ---------------- SSE ----------------
+  var es = null;
+  function connect() {
+    es = new EventSource("/stream");
+    es.addEventListener("open", function () { $("conn-lost").style.display = "none"; });
+    es.addEventListener("status", function (e) { try { applyStatus(JSON.parse(e.data)); } catch (x) {} });
+    es.addEventListener("meta", function (e) { try { lastMeta = JSON.parse(e.data); } catch (x) {} });
+    es.addEventListener("packet", function (e) { try { onPacket(JSON.parse(e.data)); } catch (x) {} });
+    es.addEventListener("log", function (e) {
+      try { $("log").textContent = "> " + JSON.parse(e.data).line; } catch (x) {}
+    });
+    es.onerror = function () {
+      $("conn-lost").style.display = "inline";
+      $("hdr-dot").className = ""; $("hdr-status").className = ""; $("hdr-status").textContent = "[NO LINK]";
+      es.close();
+      setTimeout(connect, 3000);
+    };
+  }
+  connect();
+
+  // ---------------- AI chat ----------------
+  function postJSON(url, body) {
+    return fetch(url, { method: "POST", headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify(body) })
+      .then(function (r) {
+        return r.json().catch(function () { return {}; }).then(function (d) { return { ok: r.ok, status: r.status, data: d }; });
+      });
+  }
+
+  function ask() {
+    var msg = $("ai-input").value.trim();
+    if (!msg) return;
+    var out = $("ai-out");
+    $("ai-btn").disabled = true;
+    out.innerHTML = "<pre>&gt; " + esc(msg) + "\n&gt; thinking...</pre>";
+    postJSON("/api/chat", { message: msg, context: lastPacket })
+      .then(function (r) {
+        if (r.status === 503 || !r.ok) {
+          out.innerHTML = '<pre class="err">' + esc(r.status === 503 ? AI_ERR : "> ERROR: " + (r.data.error || ("HTTP " + r.status))) + "</pre>";
+          return;
+        }
+        var html = "<pre>&gt; " + esc(msg) + "\n\n" + esc(r.data.reply || "") + "</pre>";
+        if (r.data.thinking) html += '<details><summary class="src">reasoning</summary><pre class="src">' + esc(r.data.thinking) + "</pre></details>";
+        out.innerHTML = html;
+      })
+      .catch(function () { out.innerHTML = '<pre class="err">' + esc(AI_ERR) + "</pre>"; })
+      .then(function () { $("ai-btn").disabled = false; });
+  }
+  $("ai-btn").addEventListener("click", ask);
+  $("ai-input").addEventListener("keydown", function (e) { if (e.key === "Enter") ask(); });
+
+  // ---------------- Digital twin ----------------
+  $("twin-btn").addEventListener("click", function () {
+    var out = $("twin-out");
+    $("twin-btn").disabled = true;
+    out.innerHTML = "<pre>&gt; running risk analysis...</pre>";
+    var fid = status.sim_flight_id != null ? status.sim_flight_id : (status.flight_id != null ? status.flight_id : null);
+    postJSON("/api/digital-twin", { flight_id: fid })
+      .then(function (r) {
+        if (r.status === 503) { out.innerHTML = '<pre class="err">' + esc(AI_ERR) + "</pre>"; return; }
+        if (!r.ok) { out.innerHTML = '<pre class="err">&gt; ERROR: ' + esc(r.data.error || ("HTTP " + r.status)) + "</pre>"; return; }
+        var d = r.data, html = "<pre>&gt; overall_risk = " + esc(d.overall_risk || "UNKNOWN") + "</pre>";
+        (d.risks || []).forEach(function (k) {
+          var sev = String(k.severity || "UNKNOWN").toUpperCase();
+          var cls = ["HIGH", "MEDIUM", "LOW"].indexOf(sev) >= 0 ? sev : "UNKNOWN";
+          html += '<div class="risk ' + cls + '"><pre>[' + esc(sev) + "] " + esc(k.title || "") +
+                  '\n<span class="body">Description: ' + esc(k.description || "") +
+                  "\nMitigation:  " + esc(k.mitigation || "") + "</span></pre></div>";
+        });
+        if (!(d.risks || []).length) html += "<pre>&gt; no structured risks returned</pre>";
+        if (d.ai_reasoning) html += '<pre class="src">&gt; reasoning: ' + esc(d.ai_reasoning) + "</pre>";
+        out.innerHTML = html;
+      })
+      .catch(function () { out.innerHTML = '<pre class="err">' + esc(AI_ERR) + "</pre>"; })
+      .then(function () { $("twin-btn").disabled = false; });
+  });
+
+  // ---------------- Sim picker ----------------
+  function loadFlights() {
+    fetch("/api/flights").then(function (r) { return r.json(); }).then(function (d) {
+      var sel = $("sim-select");
+      sel.innerHTML = "";
+      (d.flights || []).forEach(function (f) {
+        var o = document.createElement("option");
+        var when = f.start_time ? new Date(f.start_time * 1000).toISOString().replace("T", " ").slice(0, 19) : "?";
+        o.value = f.id;
+        o.textContent = "Flight #" + f.id + "  " + when + "  " + f.packet_count + " pkts  " +
+                        (f.duration_s != null ? f.duration_s + " s" : "");
+        if (f.id === status.sim_flight_id) o.selected = true;
+        sel.appendChild(o);
+      });
+      if (!sel.options.length) $("sim-msg").textContent = "> no completed flights";
+    }).catch(function () { $("sim-msg").textContent = "> ERROR: cannot list flights"; });
+  }
+  $("sim-load").addEventListener("click", function () {
+    var id = parseInt($("sim-select").value, 10);
+    if (isNaN(id)) return;
+    $("sim-msg").textContent = "> loading...";
+    postJSON("/api/sim/load", { flight_id: id }).then(function (r) {
+      $("sim-msg").textContent = r.ok ? "> loaded flight #" + id + " (" + r.data.packet_count + " packets)"
+                                      : "> ERROR: " + (r.data.error || ("HTTP " + r.status));
+    });
+  });
+})();
 </script>
 </body>
 </html>

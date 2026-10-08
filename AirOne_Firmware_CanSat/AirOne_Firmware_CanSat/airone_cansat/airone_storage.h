@@ -29,6 +29,7 @@
 #include <Arduino.h>
 #include <SPI.h>
 #include <SD.h>
+#include <SPIFFS.h>
 #include <stdio.h>
 #include <unistd.h>
 #include <sys/stat.h>
@@ -203,6 +204,29 @@ static volatile uint32_t g_log_frames_sd = 0, g_log_frames_flash = 0;
 static volatile uint32_t g_log_dropped = 0, g_log_sd_failovers = 0;
 static volatile bool g_storage_sync_req = false;
 static volatile bool g_storage_erase_req = false;
+
+// ---- Last-resort sink: SPIFFS on the ESP32's internal flash ----
+// Used only when both MicroSD and the external W25Q128 fail. SPIFFS lives on
+// the module's own flash (not the shared SPI bus), so no SpiLock is needed.
+#define STORAGE_SPIFFS_PATH "/AIRONE_EMERGENCY.BIN"
+static bool g_spiffs_ok = false;
+static File g_spiffs_file;
+static volatile uint32_t g_log_frames_spiffs = 0;
+
+static bool spiffs_append(const uint8_t* buf, size_t len) {
+  if (!g_spiffs_ok) return false;
+  if (!g_spiffs_file) {
+    g_spiffs_file = SPIFFS.open(STORAGE_SPIFFS_PATH, "a");
+    if (!g_spiffs_file) { g_spiffs_ok = false; return false; }
+  }
+  if (g_spiffs_file.write(buf, len) != len) {
+    g_spiffs_file.close();
+    g_spiffs_ok = false;               // partition full or failing: stop trying
+    return false;
+  }
+  g_spiffs_file.flush();
+  return true;
+}
 
 // Ring buffer of [u16 len][frame] records. Positions are free-running counters.
 static uint8_t* g_ring = NULL;
@@ -390,7 +414,15 @@ static void storage_task(void*) {
       }
 
       // Fallback sink: flash (durable immediately).
+      // Last resort: SPIFFS on internal flash.
       if (flash_append(rec, len)) g_log_frames_flash = g_log_frames_flash + 1;
+      else if (g_spiffs_ok && spiffs_append(rec, len)) {
+        g_log_frames_spiffs = g_log_frames_spiffs + 1;
+        // First frame, then every 50th, so the console is not flooded at 2 Hz.
+        if (g_log_frames_spiffs == 1 || g_log_frames_spiffs % 50 == 0)
+          Serial.printf("[STORAGE] SPIFFS fallback: frame saved (%lu total)\n",
+                        (unsigned long)g_log_frames_spiffs);
+      }
       else g_log_dropped = g_log_dropped + 1;   // no sink left: count, move on
       portENTER_CRITICAL(&g_ring_mux);
       g_ring_rd = next;
@@ -466,6 +498,11 @@ static void storage_begin(int sd_cs, int flash_cs) {
   }
   wdt_kick_ext();
 
+  // ---- SPIFFS (internal flash, last-resort sink) ----
+  g_spiffs_ok = SPIFFS.begin(true);    // format on first use
+  Serial.println(g_spiffs_ok ? F("[STORAGE] SPIFFS: OK") : F("[STORAGE] SPIFFS: FAIL"));
+  wdt_kick_ext();
+
   // ---- MicroSD ----
   if (sd_cs >= 0) {
     g_sd_ok = sd_mount();
@@ -488,11 +525,12 @@ static void storage_print_status() {
   portENTER_CRITICAL(&g_ring_mux);
   uint32_t pending = g_ring_wr - g_ring_rd, unsynced = g_ring_rd - g_ring_keep;
   portEXIT_CRITICAL(&g_ring_mux);
-  Serial.printf("[STORAGE] SD=%s %s | flash=%s wp=%lu/%lu kB%s | frames sd=%lu flash=%lu dropped=%lu failovers=%lu | ring pending=%lu unsynced=%lu B\n",
+  Serial.printf("[STORAGE] SD=%s %s | flash=%s wp=%lu/%lu kB%s | frames sd=%lu flash=%lu spiffs=%lu dropped=%lu failovers=%lu | ring pending=%lu unsynced=%lu B\n",
                 g_sd_ok ? "OK" : "DOWN", g_sd_ok ? g_sd_path : "",
                 g_flash_ok ? "OK" : "FAIL", (unsigned long)(g_flash_wp / 1024),
                 (unsigned long)(g_flash.capacity() / 1024), g_flash_full ? " FULL" : "",
                 (unsigned long)g_log_frames_sd, (unsigned long)g_log_frames_flash,
+                (unsigned long)g_log_frames_spiffs,
                 (unsigned long)g_log_dropped, (unsigned long)g_log_sd_failovers,
                 (unsigned long)pending, (unsigned long)unsynced);
 }

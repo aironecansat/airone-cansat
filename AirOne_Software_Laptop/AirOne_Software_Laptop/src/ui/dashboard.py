@@ -63,14 +63,7 @@ def stream():
         # Send current state immediately so the page renders before the next packet.
         with lock:
             snap = dict(state)
-        yield "data: " + json.dumps({
-            "type": "status",
-            "connected": snap["connected"],
-            "port": snap["port"],
-            "packets_rx": snap["packets_rx"],
-            "flights_completed": snap["flights_completed"],
-            "log": snap["log"][-10:],
-        }) + "\n\n"
+        yield "event: status\ndata: " + json.dumps(snap) + "\n\n"
 
         last_heartbeat = time.time()
         try:
